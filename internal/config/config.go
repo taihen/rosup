@@ -252,5 +252,8 @@ func validate(cfg *Config) error {
 			return fmt.Errorf("%s is required", field.name)
 		}
 	}
+	if cfg.Ops.SSHPrivateKeyPath != "" && cfg.Ops.GitKnownHostsPath == "" {
+		return fmt.Errorf("ops.git_known_hosts_path is required when ops.ssh_private_key_path is set")
+	}
 	return nil
 }

@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -164,6 +165,32 @@ ssh:
 		if got[name] != want {
 			t.Errorf("%s: got %q want %q", name, got[name], want)
 		}
+	}
+}
+
+func TestLoadRejectsOpsGitKeyWithoutKnownHosts(t *testing.T) {
+	p := writeYAML(t, `
+data_dir: /var/lib/rosup
+state_dir: /var/lib/rosup/state
+package_dir: /var/lib/rosup/packages
+backup_dir: /var/lib/rosup/backups
+lock_path: /var/lib/rosup/state/rosup.lock
+architectures: [arm]
+channel: long-term
+ops:
+  path: /var/lib/rosup/ops
+  remote: git@github.com:netrunnerlabs/rosup-ops.git
+  ssh_private_key_path: /var/lib/rosup/ops/id_ed25519
+ssh:
+  private_key_path: /var/lib/rosup/ssh/id_ed25519
+  known_hosts_path: /var/lib/rosup/ssh/known_hosts
+`)
+	_, err := config.Load(p)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "git_known_hosts_path") {
+		t.Fatalf("want git_known_hosts_path in error, got %v", err)
 	}
 }
 
