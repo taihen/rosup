@@ -34,13 +34,20 @@ var ExtraPackages = []string{
 	"openflow",
 	"multicast",
 	"system",
+	"iot",
+	"lora",
+	"calea",
+	"dude",
 }
 
 var knownArchs = []string{
 	"mipsbe", "smips", "mmips", "mipsle", "ppc", "tile", "arm64", "arm", "x86",
 }
 
-var npkNameRe = regexp.MustCompile(`(?i)[A-Za-z0-9._+-]+\.npk`)
+var (
+	npkNameRe       = regexp.MustCompile(`(?i)[A-Za-z0-9._+-]+\.npk`)
+	newestVersionRe = regexp.MustCompile(`^6\.\d+(\.\d+)*$`)
+)
 
 func NewestURL() string {
 	return newestLongTermURL
@@ -57,13 +64,41 @@ func PackageURL(version, arch, pkg string) string {
 }
 
 func packageFileName(version, arch, pkg string) string {
-	if arch == "x86" && pkg == "routeros" {
-		return "routeros-" + version + ".npk"
+	if pkg == "routeros" {
+		return "routeros-" + arch + "-" + version + ".npk"
 	}
 	if arch == "x86" {
 		return pkg + "-" + version + ".npk"
 	}
-	return pkg + "-" + arch + "-" + version + ".npk"
+	return pkg + "-" + version + "-" + arch + ".npk"
+}
+
+func packageFileNames(version, arch, pkg string) []string {
+	primary := packageFileName(version, arch, pkg)
+	out := []string{primary}
+	seen := map[string]struct{}{primary: {}}
+	add := func(name string) {
+		if _, ok := seen[name]; ok {
+			return
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	if pkg == "routeros" {
+		add("routeros-" + arch + "-" + version + ".npk")
+		add("routeros-" + version + "-" + arch + ".npk")
+		if arch == "x86" {
+			add("routeros-" + version + ".npk")
+		}
+	} else if arch == "x86" {
+		add(pkg + "-" + version + ".npk")
+		add(pkg + "-" + version + "-" + arch + ".npk")
+		add(pkg + "-" + arch + "-" + version + ".npk")
+	} else {
+		add(pkg + "-" + version + "-" + arch + ".npk")
+		add(pkg + "-" + arch + "-" + version + ".npk")
+	}
+	return out
 }
 
 func ParseNewest(body []byte) (string, error) {
@@ -82,7 +117,7 @@ func ParseNewest(body []byte) (string, error) {
 	if strings.HasPrefix(v, "7.") {
 		return "", fmt.Errorf("release: RouterOS 7 is not supported: %s", v)
 	}
-	if !strings.HasPrefix(v, "6.") {
+	if !newestVersionRe.MatchString(v) {
 		return "", fmt.Errorf("release: unsupported version %s", v)
 	}
 	return v, nil
@@ -122,18 +157,27 @@ func ParseNPKName(name, version string) (pkg, arch string, ok bool) {
 		return "", "", false
 	}
 	base := name[:len(name)-len(".npk")]
-	suffix := "-" + version
-	if !strings.HasSuffix(base, suffix) {
-		return "", "", false
+	verSuffix := "-" + version
+
+	for _, a := range knownArchs {
+		rest, found := strings.CutSuffix(base, "-"+a)
+		if !found || rest == "" {
+			continue
+		}
+		pkgName, foundVer := strings.CutSuffix(rest, verSuffix)
+		if foundVer && pkgName != "" {
+			return pkgName, a, true
+		}
 	}
-	rest := strings.TrimSuffix(base, suffix)
-	if rest == "" {
+
+	rest, found := strings.CutSuffix(base, verSuffix)
+	if !found || rest == "" {
 		return "", "", false
 	}
 	for _, a := range knownArchs {
-		prefix, found := strings.CutSuffix(rest, "-"+a)
-		if found && prefix != "" {
-			return prefix, a, true
+		pkgName, foundArch := strings.CutSuffix(rest, "-"+a)
+		if foundArch && pkgName != "" {
+			return pkgName, a, true
 		}
 	}
 	return rest, "x86", true

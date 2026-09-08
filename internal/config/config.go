@@ -14,6 +14,7 @@ const (
 	defaultBackupRetentionDays = 30
 	defaultSSHUsername         = "rosup"
 	defaultSSHPort             = 22
+	defaultSSHTimeout          = 30 * time.Second
 	defaultReconnectAttempts   = 3
 	defaultOpsInventoryFile    = "inventory/devices.yaml"
 	defaultOpsAuditDir         = "audit"
@@ -156,6 +157,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.SSH.DefaultPort == 0 {
 		cfg.SSH.DefaultPort = defaultSSHPort
+	}
+	if cfg.SSH.Timeout == 0 {
+		cfg.SSH.Timeout = defaultSSHTimeout
 	}
 	if cfg.Reconnect.Attempts == 0 {
 		cfg.Reconnect.Attempts = defaultReconnectAttempts

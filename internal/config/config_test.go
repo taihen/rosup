@@ -73,6 +73,9 @@ ssh:
 	if cfg.SSH.Username != "rosup" || cfg.SSH.DefaultPort != 22 || !cfg.SSH.TOFU {
 		t.Fatalf("defaults: %+v", cfg.SSH)
 	}
+	if cfg.SSH.Timeout != 30*time.Second {
+		t.Fatalf("ssh.timeout default %s", cfg.SSH.Timeout)
+	}
 	if cfg.Reconnect.Attempts != 3 || cfg.Reconnect.Timeout != 3*time.Minute {
 		t.Fatalf("reconnect: %+v", cfg.Reconnect)
 	}

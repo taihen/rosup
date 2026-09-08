@@ -19,7 +19,11 @@ import (
 	"github.com/taihen/rosup/internal/config"
 )
 
-const HTTPTimeout = 2 * time.Minute
+const (
+	HTTPTimeout = 2 * time.Minute
+	maxMetaBody = 1 << 20
+	maxNPKBody  = 512 << 20
+)
 
 type HTTPGet interface {
 	Get(ctx context.Context, url string) (body []byte, status int, err error)
@@ -44,11 +48,33 @@ func (c *HTTPClient) Get(ctx context.Context, rawURL string) ([]byte, int, error
 		return nil, 0, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(resp.Body)
+	body, err := readLimited(resp.Body, bodyLimit(rawURL))
 	if err != nil {
 		return nil, resp.StatusCode, err
 	}
 	return body, resp.StatusCode, nil
+}
+
+func bodyLimit(rawURL string) int64 {
+	u := rawURL
+	if i := strings.Index(u, "?"); i >= 0 {
+		u = u[:i]
+	}
+	if strings.HasSuffix(strings.ToLower(u), ".npk") {
+		return maxNPKBody
+	}
+	return maxMetaBody
+}
+
+func readLimited(r io.Reader, max int64) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > max {
+		return nil, fmt.Errorf("release: response body exceeds %d bytes", max)
+	}
+	return body, nil
 }
 
 func fileURL(version, name string) string {
@@ -158,25 +184,32 @@ func syncFromProbe(ctx context.Context, client HTTPGet, destDir, version string,
 	var planned []plannedFile
 	for _, arch := range archs {
 		for _, pkg := range ExtraPackages {
-			planned = append(planned, plannedFile{
-				name: packageFileName(version, arch, pkg),
-				arch: arch,
-				pkg:  pkg,
-				url:  PackageURL(version, arch, pkg),
-			})
+			if pkg == "lcd" && arch != "x86" {
+				continue
+			}
+			for _, name := range packageFileNames(version, arch, pkg) {
+				planned = append(planned, plannedFile{
+					name: name,
+					arch: arch,
+					pkg:  pkg,
+					url:  fileURL(version, name),
+				})
+			}
 		}
 	}
 	files, err := downloadAll(ctx, client, destDir, planned, false)
 	if err != nil {
 		return nil, err
 	}
-	got := map[string]int{}
+	gotROS := map[string]bool{}
 	for _, f := range files {
-		got[f.Architecture]++
+		if f.Package == "routeros" {
+			gotROS[f.Architecture] = true
+		}
 	}
 	for _, arch := range archs {
-		if got[arch] == 0 {
-			return nil, fmt.Errorf("release: zero files for architecture %s", arch)
+		if !gotROS[arch] {
+			return nil, fmt.Errorf("release: missing routeros package for architecture %s", arch)
 		}
 	}
 	return files, nil

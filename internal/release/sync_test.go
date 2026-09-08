@@ -5,6 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -260,6 +263,62 @@ func TestSyncDirectoryListing500FailsWithoutProbe(t *testing.T) {
 	}
 }
 
+func TestSyncProbeRequiresRouterOSPackage(t *testing.T) {
+	cfg := testConfig(t, "arm")
+	f := newFakeHTTP(t)
+	f.set(release.NewestURL(), 200, mikrotikFixture(t, "NEWEST6.long-term"))
+	f.set(release.DirectoryURL("6.49.21"), 404, nil)
+	f.set(release.PackageURL("6.49.21", "arm", "wireless"), 200, []byte("wifi"))
+
+	_, err := release.Sync(context.Background(), cfg, f)
+	if err == nil {
+		t.Fatal("expected error when routeros is missing")
+	}
+	if !strings.Contains(err.Error(), "routeros") {
+		t.Fatalf("error should mention routeros, got %v", err)
+	}
+}
+
+func TestSyncProbeFallsBackToLegacyExtraName(t *testing.T) {
+	cfg := testConfig(t, "arm")
+	f := newFakeHTTP(t)
+	f.set(release.NewestURL(), 200, mikrotikFixture(t, "NEWEST6.long-term"))
+	f.set(release.DirectoryURL("6.49.21"), 404, nil)
+	f.set(release.PackageURL("6.49.21", "arm", "routeros"), 200, []byte("ros"))
+	f.set("https://download.mikrotik.com/routeros/6.49.21/wireless-arm-6.49.21.npk", 200, []byte("legacy-wifi"))
+
+	man, err := release.Sync(context.Background(), cfg, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, file := range man.Files {
+		if file.Name == "wireless-arm-6.49.21.npk" && file.Package == "wireless" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected legacy extra name, files %#v", man.Files)
+	}
+}
+
+func TestSyncProbeSkipsLCDOnNonX86(t *testing.T) {
+	cfg := testConfig(t, "arm")
+	f := newFakeHTTP(t)
+	f.set(release.NewestURL(), 200, mikrotikFixture(t, "NEWEST6.long-term"))
+	f.set(release.DirectoryURL("6.49.21"), 404, nil)
+	f.set(release.PackageURL("6.49.21", "arm", "routeros"), 200, []byte("ros"))
+
+	if _, err := release.Sync(context.Background(), cfg, f); err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range f.muGets {
+		if strings.Contains(u, "/lcd-") {
+			t.Fatalf("probed lcd on arm: %s", u)
+		}
+	}
+}
+
 func TestSyncProbeZeroFilesForArchFails(t *testing.T) {
 	cfg := testConfig(t, "arm")
 	f := newFakeHTTP(t)
@@ -300,5 +359,41 @@ func TestListVersionsFromDisk(t *testing.T) {
 	}
 	if len(got) != 2 || got[0] != "6.48.7" || got[1] != "6.49.21" {
 		t.Fatalf("got %#v", got)
+	}
+}
+
+func TestHTTPClientCapsMetaBody(t *testing.T) {
+	payload := strings.Repeat("x", 2<<20)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, payload)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := release.NewHTTPClient()
+	_, _, err := c.Get(context.Background(), srv.URL+"/NEWEST6.long-term")
+	if err == nil {
+		t.Fatal("expected error when NEWEST body exceeds cap")
+	}
+}
+
+func TestHTTPClientCapsNPKBody(t *testing.T) {
+	payload := strings.Repeat("n", 2<<20)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, payload)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := release.NewHTTPClient()
+	body, status, err := c.Get(context.Background(), srv.URL+"/routeros-arm-6.49.21.npk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("status %d", status)
+	}
+	if len(body) != len(payload) {
+		t.Fatalf("len %d", len(body))
 	}
 }
