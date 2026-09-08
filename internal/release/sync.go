@@ -85,16 +85,23 @@ func Sync(ctx context.Context, cfg *config.Config, client HTTPGet) (*Manifest, e
 	}
 
 	var names []string
-	if listStatus == http.StatusOK {
+	probe := false
+	switch listStatus {
+	case http.StatusOK:
 		names = ParseListing(listBody)
+		probe = len(names) == 0
+	case http.StatusNotFound, http.StatusForbidden:
+		probe = true
+	default:
+		return nil, fmt.Errorf("release: list %s: status %d", dirURL, listStatus)
 	}
 
 	destDir := filepath.Join(cfg.PackageDir, version)
 	var files []File
-	if len(names) > 0 {
-		files, err = syncFromListing(ctx, client, destDir, version, cfg.Architectures, names)
-	} else {
+	if probe {
 		files, err = syncFromProbe(ctx, client, destDir, version, cfg.Architectures)
+	} else {
+		files, err = syncFromListing(ctx, client, destDir, version, cfg.Architectures, names)
 	}
 	if err != nil {
 		return nil, err

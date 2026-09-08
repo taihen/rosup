@@ -238,6 +238,28 @@ func TestSyncEmptyListingProbesExtraPackages(t *testing.T) {
 	}
 }
 
+func TestSyncDirectoryListing500FailsWithoutProbe(t *testing.T) {
+	cfg := testConfig(t, "arm")
+	f := newFakeHTTP(t)
+	f.set(release.NewestURL(), 200, mikrotikFixture(t, "NEWEST6.long-term"))
+	f.set(release.DirectoryURL("6.49.21"), 500, []byte("internal error"))
+	f.set(release.PackageURL("6.49.21", "arm", "routeros"), 200, []byte("ros"))
+	f.set(release.PackageURL("6.49.21", "arm", "wireless"), 200, []byte("wifi"))
+
+	_, err := release.Sync(context.Background(), cfg, f)
+	if err == nil {
+		t.Fatal("expected error when directory listing returns 500")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Fatalf("error should mention status 500, got %v", err)
+	}
+	for _, u := range f.muGets {
+		if strings.Contains(u, "/routeros-arm-") || strings.Contains(u, "/wireless-arm-") {
+			t.Fatalf("probed extra package after 500 listing: %s", u)
+		}
+	}
+}
+
 func TestSyncProbeZeroFilesForArchFails(t *testing.T) {
 	cfg := testConfig(t, "arm")
 	f := newFakeHTTP(t)
