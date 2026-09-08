@@ -1,0 +1,2 @@
+Flags: R - radius 
+ #   NAME         SERVICE CALLER-ID         ADDRESS         UPTIME   ENCODING

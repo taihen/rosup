@@ -1,0 +1,4 @@
+Flags: X - disabled, I - invalid, D - dynamic 
+ #   ADDRESS            NETWORK         INTERFACE
+ 0   192.0.2.10/24      192.0.2.0       bridge1
+ 1 D 10.10.0.1/24       10.10.0.0       ether1

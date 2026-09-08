@@ -1,0 +1,4 @@
+  jan/02/1970 00:06:31 system,info,account user rosup logged in from 192.0.2.1 via ssh
+  jan/02/1970 00:07:54 system,info installed routeros-6.49.21
+  jan/02/1970 00:07:54 system,error error while installing package wireless-6.49.21: not enough disk space
+  jan/02/1970 00:08:01 system,info,account user rosup logged in from 192.0.2.1 via ssh

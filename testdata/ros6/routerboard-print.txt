@@ -1,0 +1,8 @@
+       routerboard: yes
+        board-name: hAP ac^2
+             model: RBD52G-5HacD2HnD
+     serial-number: HD1080TEST01
+     firmware-type: ipq4000L
+  factory-firmware: 6.42.4
+  current-firmware: 6.49.13
+  upgrade-firmware: 6.49.18

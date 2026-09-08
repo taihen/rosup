@@ -1,0 +1,3 @@
+Flags: X - disabled 
+ 0 X service=ppp address=192.0.2.50 secret=redacted timeout=300ms 
+     authentication-port=1812 accounting-port=1813

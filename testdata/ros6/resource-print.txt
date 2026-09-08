@@ -1,0 +1,18 @@
+                   uptime: 1w2d3h4m5s
+                  version: 6.49.18 (long-term)
+               build-time: Nov/11/2024 12:10:44
+         factory-software: 6.44.6
+              free-memory: 128.2MiB
+             total-memory: 256.0MiB
+                      cpu: ARM
+                cpu-count: 4
+            cpu-frequency: 716MHz
+                 cpu-load: 3%
+           free-hdd-space: 4212.0KiB
+          total-hdd-space: 16.0MiB
+  write-sect-since-reboot: 1842
+         write-sect-total: 22104
+               bad-blocks: 0%
+        architecture-name: arm
+               board-name: hAP ac^2
+                 platform: MikroTik

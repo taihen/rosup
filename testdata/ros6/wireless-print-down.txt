@@ -1,0 +1,9 @@
+Flags: X - disabled, R - running 
+ 0  X name="wlan1" mtu=1500 mac-address=00:0C:42:00:00:01 arp=enabled 
+      interface-type=Atheros AR9300 mode=ap-bridge ssid="netrunner-5" 
+      frequency=5500 band=5ghz-a/n/ac channel-width=20/40/80mhz-Ceee 
+      radio-name="ap-01" disabled=yes
+ 1  R name="wlan2" mtu=1500 mac-address=00:0C:42:00:00:02 arp=enabled 
+      interface-type=Atheros AR9300 mode=ap-bridge ssid="netrunner-2" 
+      frequency=2412 band=2ghz-b/g/n channel-width=20mhz 
+      radio-name="ap-01-2g" disabled=no
