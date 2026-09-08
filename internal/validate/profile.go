@@ -11,7 +11,10 @@ import (
 )
 
 type Profile struct {
-	ConvergenceTimeout time.Duration
+	ConvergenceTimeout    time.Duration
+	NeighborStateAllow    []string
+	RouteCountTolerance   int
+	SessionRestoreTimeout time.Duration
 }
 
 func LoadProfile(cfg *config.Config, role string) (Profile, error) {
@@ -27,7 +30,10 @@ func LoadProfile(cfg *config.Config, role string) (Profile, error) {
 		return Profile{}, fmt.Errorf("validate: read profile %s: %w", path, err)
 	}
 	var raw struct {
-		ConvergenceTimeout string `yaml:"convergence_timeout"`
+		ConvergenceTimeout    string   `yaml:"convergence_timeout"`
+		NeighborStateAllow    []string `yaml:"neighbor_state_allow"`
+		RouteCountTolerance   int      `yaml:"route_count_tolerance"`
+		SessionRestoreTimeout string   `yaml:"session_restore_timeout"`
 	}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return Profile{}, fmt.Errorf("validate: parse profile %s: %w", path, err)
@@ -42,5 +48,23 @@ func LoadProfile(cfg *config.Config, role string) (Profile, error) {
 	if d <= 0 {
 		return Profile{}, fmt.Errorf("validate: profile %s: convergence_timeout must be positive", role)
 	}
-	return Profile{ConvergenceTimeout: d}, nil
+	p := Profile{
+		ConvergenceTimeout:  d,
+		NeighborStateAllow:  raw.NeighborStateAllow,
+		RouteCountTolerance: raw.RouteCountTolerance,
+	}
+	if len(p.NeighborStateAllow) == 0 {
+		p.NeighborStateAllow = []string{"Full", "2-Way"}
+	}
+	if raw.SessionRestoreTimeout != "" {
+		s, err := time.ParseDuration(raw.SessionRestoreTimeout)
+		if err != nil {
+			return Profile{}, fmt.Errorf("validate: profile %s: session_restore_timeout: %w", role, err)
+		}
+		if s < 0 {
+			return Profile{}, fmt.Errorf("validate: profile %s: session_restore_timeout must not be negative", role)
+		}
+		p.SessionRestoreTimeout = s
+	}
+	return p, nil
 }

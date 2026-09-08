@@ -1,0 +1,9 @@
+ 0 instance=default router-id=192.0.2.2 address=192.0.2.2 interface=ether1 
+   priority=1 dr-address=0.0.0.0 backup-dr-address=0.0.0.0 state="Full" 
+   state-changes=6 ls-retransmits=0 ls-requests=0 db-summaries=0 
+   adjacency=5h31m5s
+
+ 1 instance=default router-id=192.0.2.3 address=192.0.2.3 interface=ether2 
+   priority=1 dr-address=192.0.2.1 backup-dr-address=192.0.2.3 state="2-Way" 
+   state-changes=4 ls-retransmits=0 ls-requests=0 db-summaries=0 
+   adjacency=0s

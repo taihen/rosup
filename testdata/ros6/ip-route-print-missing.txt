@@ -1,0 +1,7 @@
+Flags: X - disabled, A - active, D - dynamic, 
+C - connect, S - static, r - rip, o - ospf, b - bgp, 
+U - unreachable, P - prohibit
+ #      DST-ADDRESS        PREF-SRC        GATEWAY            DISTANCE
+ 0 ADS  0.0.0.0/0                          192.0.2.1                 1
+ 1 ADC  192.0.2.0/24       192.0.2.10      ether1                      0
+ 2 ADo  10.0.0.0/8                         10.0.0.2                  110

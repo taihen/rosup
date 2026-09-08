@@ -277,7 +277,15 @@ func (r *deviceRun) snapshotBaseline() error {
 	if err != nil {
 		return fmt.Errorf("upgrade: %s: %w", r.d.Name, err)
 	}
-	return validate.WriteBaseline(dir, validate.FromFacts(r.d.Name, facts, true, nil))
+	profile := r.d.ValidationProfile
+	if profile == "" {
+		profile = r.d.Role
+	}
+	roleFacts, err := validate.CaptureRoleFacts(r.ctx, r.client, profile)
+	if err != nil {
+		return fmt.Errorf("upgrade: %s: %w", r.d.Name, err)
+	}
+	return validate.WriteBaseline(dir, validate.FromFacts(r.d.Name, facts, true, roleFacts))
 }
 
 func (r *deviceRun) waitReconnect() error {

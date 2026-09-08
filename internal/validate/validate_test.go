@@ -316,13 +316,13 @@ func TestCheckCallsRoleHookAfterSharedChecks(t *testing.T) {
 	}
 }
 
-func TestRoleChecksTableIsTheProfileHook(t *testing.T) {
+func TestRoleChecksRegisteredForAllProfiles(t *testing.T) {
 	if validate.RoleChecks == nil {
 		t.Fatal("RoleChecks must exist for profiles 15-19")
 	}
 	for _, role := range []string{"ospf", "pppoe", "radio", "switch", "access"} {
-		if _, ok := validate.RoleChecks[role]; ok {
-			t.Fatalf("role %s must not be implemented yet", role)
+		if _, ok := validate.RoleChecks[role]; !ok {
+			t.Fatalf("RoleChecks[%s] is missing", role)
 		}
 	}
 }
@@ -375,23 +375,56 @@ func writeProfile(t *testing.T, cfg *config.Config, role, body string) {
 
 func writeBaselineFor(t *testing.T, cfg *config.Config, facts discover.Facts) {
 	t.Helper()
+	writeBaselineRole(t, cfg, facts, nil)
+}
+
+func writeBaselineRole(t *testing.T, cfg *config.Config, facts discover.Facts, roleFacts json.RawMessage) {
+	t.Helper()
 	dir, err := validate.JobDir(cfg, "router-01", target)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := validate.WriteBaseline(dir, validate.FromFacts("router-01", facts, true, nil)); err != nil {
+	if err := validate.WriteBaseline(dir, validate.FromFacts("router-01", facts, true, roleFacts)); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func testDevice() inventory.Device {
+	return testDeviceRole("ospf")
+}
+
+func testDeviceRole(role string) inventory.Device {
 	return inventory.Device{
 		Name:              "router-01",
 		Address:           "192.0.2.1",
-		Role:              "ospf",
+		Role:              role,
 		Group:             "core-a",
-		ValidationProfile: "ospf",
+		ValidationProfile: role,
 	}
+}
+
+func ospfProfileYAML() string {
+	return `convergence_timeout: 1ms
+neighbor_state_allow:
+  - Full
+  - 2-Way
+route_count_tolerance: 0
+`
+}
+
+func runCheck(t *testing.T, cfg *config.Config, device inventory.Device, client *fakeClient, clock validate.Clock) error {
+	t.Helper()
+	if clock == nil {
+		clock = newFakeClock()
+	}
+	return validate.Check(context.Background(), validate.Request{
+		Config:  cfg,
+		Device:  device,
+		Target:  target,
+		Dial:    dialClient(client),
+		Clock:   clock,
+		Profile: device.ValidationProfile,
+	})
 }
 
 func sampleFacts(version string) discover.Facts {
@@ -435,6 +468,9 @@ type fakeClient struct {
 	firmwareCurrent string
 	firmwareUpgrade string
 	runs            []string
+	outputs         map[string]string
+	seq             map[string][]string
+	seqPos          map[string]int
 }
 
 func newFakeClient(t *testing.T, version string, pkgs []string, log string) *fakeClient {
@@ -445,11 +481,40 @@ func newFakeClient(t *testing.T, version string, pkgs []string, log string) *fak
 		log:             log,
 		firmwareCurrent: "6.49.13",
 		firmwareUpgrade: "6.49.18",
+		outputs:         map[string]string{},
+		seq:             map[string][]string{},
+		seqPos:          map[string]int{},
 	}
+}
+
+func (c *fakeClient) set(command, output string) *fakeClient {
+	c.outputs[command] = output
+	return c
+}
+
+func (c *fakeClient) setSeq(command string, outputs ...string) *fakeClient {
+	c.seq[command] = outputs
+	c.seqPos[command] = 0
+	return c
 }
 
 func (c *fakeClient) Run(_ context.Context, command string) (string, error) {
 	c.runs = append(c.runs, command)
+	if strings.Contains(command, "wifi") {
+		return "", fmt.Errorf("ROS7 command not allowed: %s", command)
+	}
+	if outs := c.seq[command]; len(outs) > 0 {
+		i := c.seqPos[command]
+		if i >= len(outs) {
+			i = len(outs) - 1
+		} else {
+			c.seqPos[command] = i + 1
+		}
+		return outs[i], nil
+	}
+	if out, ok := c.outputs[command]; ok {
+		return out, nil
+	}
 	switch command {
 	case "/system resource print":
 		return fmt.Sprintf(`                  version: %s (long-term)
@@ -472,6 +537,13 @@ func (c *fakeClient) Run(_ context.Context, command string) (string, error) {
 		return "  name: router-01\n", nil
 	case validate.SystemLogCmd:
 		return c.log, nil
+	case "/routing ospf neighbor print", "/ip route print",
+		"/interface pppoe-server server print", "/interface pppoe-server print",
+		"/ppp aaa print", "/radius print", "/ppp active print",
+		"/interface wireless print", "/interface wireless registration-table print",
+		"/interface bridge print", "/interface bridge vlan print",
+		"/interface print", "/ip address print":
+		return "", nil
 	default:
 		return "", fmt.Errorf("unexpected command %q", command)
 	}

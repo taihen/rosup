@@ -1,0 +1,4 @@
+Flags: R - radius 
+ #   NAME         SERVICE CALLER-ID         ADDRESS         UPTIME   ENCODING
+ 0 R alice        pppoe                     10.10.0.2       1h2m3s
+ 1 R bob          pppoe                     10.10.0.3         5m

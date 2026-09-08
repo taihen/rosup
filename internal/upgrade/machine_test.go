@@ -112,8 +112,18 @@ func TestHappyPathReachesCompleteWithoutRouterBOOT(t *testing.T) {
 	if baseline.CurrentFirmware == "" || baseline.UpgradeFirmware == "" {
 		t.Fatalf("baseline firmware %q / %q", baseline.CurrentFirmware, baseline.UpgradeFirmware)
 	}
-	if string(baseline.RoleFacts) != "{}" {
-		t.Fatalf("role_facts slot %s", baseline.RoleFacts)
+	if len(baseline.RoleFacts) == 0 {
+		t.Fatal("role_facts missing")
+	}
+	var role map[string]json.RawMessage
+	if err := json.Unmarshal(baseline.RoleFacts, &role); err != nil {
+		t.Fatalf("role_facts %s", baseline.RoleFacts)
+	}
+	if _, ok := role["neighbors"]; !ok {
+		t.Fatalf("ospf neighbors missing in %s", baseline.RoleFacts)
+	}
+	if !contains(sim.runs, validate.CmdOSPFNeighbor) || !contains(sim.runs, validate.CmdIPRoute) {
+		t.Fatalf("missing ospf snapshot commands in %v", sim.runs)
 	}
 	if world.clock.now.Sub(world.clock.start) != 5*time.Minute {
 		t.Fatalf("convergence wait %s, want profile 5m not reconnect 3m", world.clock.now.Sub(world.clock.start))
@@ -558,6 +568,13 @@ func (s *deviceSim) Run(_ context.Context, command string) (string, error) {
 		return "", errors.New("connection reset by peer")
 	case command == validate.SystemLogCmd:
 		return systemLogPrint(s.version, s.packages), nil
+	case command == validate.CmdOSPFNeighbor, command == validate.CmdIPRoute,
+		command == validate.CmdPPPoEServer, command == validate.CmdPPPAAA,
+		command == validate.CmdRADIUS, command == validate.CmdPPPActive,
+		command == validate.CmdWireless, command == validate.CmdWirelessReg,
+		command == validate.CmdBridge, command == validate.CmdBridgeVLAN,
+		command == validate.CmdInterface, command == validate.CmdIPAddress:
+		return "", nil
 	default:
 		return "", fmt.Errorf("unexpected command %q", command)
 	}

@@ -1,0 +1,5 @@
+Flags: X - disabled 
+ 0 X service-name="isp" interface=ether2 max-mtu=1480 max-mru=1480 
+     mrru=disabled authentication=pap,chap,mschap1,mschap2 
+     keepalive-timeout=10 one-session-per-host=no max-sessions=unlimited 
+     pado-delay=0 default-profile=default

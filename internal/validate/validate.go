@@ -25,6 +25,19 @@ const (
 	cmdRouterboard = "/system routerboard print"
 	cmdIdentity    = "/system identity print"
 	baselineFile   = "baseline.json"
+
+	CmdOSPFNeighbor = "/routing ospf neighbor print"
+	CmdIPRoute      = "/ip route print"
+	CmdPPPoEServer  = "/interface pppoe-server server print"
+	CmdPPPAAA       = "/ppp aaa print"
+	CmdRADIUS       = "/radius print"
+	CmdPPPActive    = "/ppp active print"
+	CmdWireless     = "/interface wireless print"
+	CmdWirelessReg  = "/interface wireless registration-table print"
+	CmdBridge       = "/interface bridge print"
+	CmdBridgeVLAN   = "/interface bridge vlan print"
+	CmdInterface    = "/interface print"
+	CmdIPAddress    = "/ip address print"
 )
 
 type Clock interface {
@@ -212,7 +225,7 @@ func Check(ctx context.Context, req Request) error {
 		fn = RoleChecks[profileName]
 	}
 	if fn != nil {
-		return fn(ctx, client, baseline, facts)
+		return fn(withRoleMeta(ctx, req.Clock, profile), client, baseline, facts)
 	}
 	return nil
 }
