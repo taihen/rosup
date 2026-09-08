@@ -40,8 +40,26 @@ func EnsureSecureDir(path string) error {
 	return nil
 }
 
+func jobPath(stateDir, name string) (string, error) {
+	if name == "" || name == "." || name == ".." || name != filepath.Base(name) {
+		return "", fmt.Errorf("state: invalid device name %q", name)
+	}
+	base, err := filepath.Abs(stateDir)
+	if err != nil {
+		return "", fmt.Errorf("state: resolve %s: %w", stateDir, err)
+	}
+	path := filepath.Join(base, name+".json")
+	if filepath.Dir(path) != base {
+		return "", fmt.Errorf("state: invalid device name %q", name)
+	}
+	return path, nil
+}
+
 func Load(stateDir, device string) (*DeviceJob, error) {
-	path := filepath.Join(stateDir, device+".json")
+	path, err := jobPath(stateDir, device)
+	if err != nil {
+		return nil, err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("state: load %s: %w", path, err)
@@ -54,8 +72,12 @@ func Load(stateDir, device string) (*DeviceJob, error) {
 }
 
 func Save(stateDir string, job *DeviceJob) error {
-	if job == nil || job.Device == "" {
+	if job == nil {
 		return errors.New("state: missing device")
+	}
+	path, err := jobPath(stateDir, job.Device)
+	if err != nil {
+		return err
 	}
 	if err := EnsureSecureDir(stateDir); err != nil {
 		return err
@@ -66,7 +88,6 @@ func Save(stateDir string, job *DeviceJob) error {
 		return fmt.Errorf("state: marshal %s: %w", job.Device, err)
 	}
 
-	path := filepath.Join(stateDir, job.Device+".json")
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("state: write %s: %w", tmp, err)
@@ -100,6 +121,9 @@ func MarkStarted(stateDir string, job *DeviceJob) error {
 func Advance(stateDir string, job *DeviceJob, stage string) error {
 	if job == nil {
 		return errors.New("state: nil job")
+	}
+	if job.Status == StatusComplete {
+		return nil
 	}
 	job.Stage = stage
 	job.UpdatedAt = time.Now().UTC()

@@ -35,3 +35,11 @@ func TestRedactRouterOSKeys(t *testing.T) {
 		t.Fatalf("community= was redacted: %s", out)
 	}
 }
+
+func TestRedactWPAPreSharedKey(t *testing.T) {
+	in := "wpa-pre-shared-key=wpa1-pass"
+	out := redact.String(in)
+	if strings.Contains(out, "wpa1-pass") {
+		t.Fatalf("leaked: %s", out)
+	}
+}

@@ -1,10 +1,12 @@
 package state_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -134,6 +136,90 @@ func TestMarkStartedSetsInProgress(t *testing.T) {
 	}
 }
 
+func TestSaveRejectsUnsafeDeviceNames(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "state")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"../x", "foo/bar", "", ".", ".."} {
+		t.Run(deviceCaseName(name), func(t *testing.T) {
+			job := sampleJob(state.StatusPending)
+			job.Device = name
+			err := state.Save(dir, job)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), "invalid device") {
+				t.Fatalf("got %v", err)
+			}
+
+			escaped := filepath.Join(root, "x.json")
+			if _, statErr := os.Stat(escaped); statErr == nil {
+				t.Fatal("wrote outside state dir")
+			}
+			nested := filepath.Join(dir, "foo")
+			if _, statErr := os.Stat(nested); statErr == nil {
+				t.Fatal("created nested path")
+			}
+		})
+	}
+}
+
+func TestLoadRejectsUnsafeDeviceNames(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"../x", "foo/bar", "", ".", ".."} {
+		t.Run(deviceCaseName(name), func(t *testing.T) {
+			_, err := state.Load(dir, name)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), "invalid device") {
+				t.Fatalf("got %v", err)
+			}
+		})
+	}
+}
+
+func TestAdvanceSkipsComplete(t *testing.T) {
+	dir := t.TempDir()
+	job := sampleJob(state.StatusComplete)
+	job.Stage = "COMPLETE"
+	if err := state.Save(dir, job); err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(dir, "golem.json")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantStage := job.Stage
+	wantUpdated := job.UpdatedAt
+
+	if err := state.Advance(dir, job, "PREFLIGHT"); err != nil {
+		t.Fatal(err)
+	}
+	if job.Stage != wantStage {
+		t.Fatalf("in-memory stage %q", job.Stage)
+	}
+	if !job.UpdatedAt.Equal(wantUpdated) {
+		t.Fatalf("in-memory UpdatedAt changed to %v", job.UpdatedAt)
+	}
+	if job.Status != state.StatusComplete {
+		t.Fatalf("in-memory status %q", job.Status)
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("disk changed:\nbefore %s\nafter %s", before, after)
+	}
+}
+
 func TestAdvanceWritesAtomically(t *testing.T) {
 	dir := t.TempDir()
 	job := sampleJob(state.StatusInProgress)
@@ -226,6 +312,13 @@ func TestEnsureSecureDirTightensExisting(t *testing.T) {
 	if perm := fi.Mode().Perm(); perm != 0o700 {
 		t.Fatalf("perm %04o", perm)
 	}
+}
+
+func deviceCaseName(name string) string {
+	if name == "" {
+		return "empty"
+	}
+	return name
 }
 
 func names(entries []os.DirEntry) []string {

@@ -153,6 +153,27 @@ func TestAcquireCreatesParentDir0700(t *testing.T) {
 	}
 }
 
+func TestAcquireTightensExistingParentDir0700(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "nested")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "rosup.lock")
+	unlock, err := lockfile.Acquire(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = unlock() })
+
+	fi, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o700 {
+		t.Fatalf("parent perm %04o", perm)
+	}
+}
+
 func startLockHelper(t *testing.T, mode, path string) (*exec.Cmd, io.WriteCloser, io.ReadCloser) {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^$")

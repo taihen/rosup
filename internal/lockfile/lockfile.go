@@ -24,15 +24,11 @@ func Acquire(path string) (func() error, error) {
 	}
 
 	dir := filepath.Dir(abs)
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return nil, fmt.Errorf("lockfile: mkdir %s: %w", dir, err)
-		}
-		if err := os.Chmod(dir, 0o700); err != nil {
-			return nil, fmt.Errorf("lockfile: chmod %s: %w", dir, err)
-		}
-	} else if err != nil {
-		return nil, fmt.Errorf("lockfile: stat %s: %w", dir, err)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("lockfile: mkdir %s: %w", dir, err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("lockfile: chmod %s: %w", dir, err)
 	}
 
 	if _, exists := held.LoadOrStore(abs, struct{}{}); exists {

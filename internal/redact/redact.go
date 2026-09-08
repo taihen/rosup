@@ -5,7 +5,7 @@ import "regexp"
 const redacted = "***"
 
 var (
-	kvSecret = regexp.MustCompile(`(?i)((?:authentication-password|wpa2-pre-shared-key|passphrase|password|secret)\s*=\s*)(?:"[^"]*"|[^\s]+)`)
+	kvSecret = regexp.MustCompile(`(?i)((?:authentication-password|wpa2?-pre-shared-key|passphrase|password|secret)\s*=\s*)(?:"[^"]*"|[^\s]+)`)
 	bearer   = regexp.MustCompile(`(?i)(Authorization:\s*Bearer\s+)\S+`)
 )
 
