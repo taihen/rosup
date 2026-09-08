@@ -1,0 +1,10 @@
+Flags: X - disabled 
+ #   NAME                    VERSION                    SCHEDULED              
+ 0   routeros                6.49.18                                           
+ 1   wireless                6.49.18                                           
+ 2   dhcp                    6.49.18                                           
+ 3   security                6.49.18                                           
+ 4   routing                 6.49.18                                           
+ 5   ppp                     6.49.18                                           
+ 6   ipv6                    6.49.18                                           
+ 7 X hotspot                 6.49.18                                           

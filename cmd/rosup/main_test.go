@@ -3,12 +3,14 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/taihen/rosup/internal/lockfile"
 	"github.com/taihen/rosup/internal/release"
 )
 
@@ -63,7 +65,6 @@ func TestUnknownCommandExitsNonZero(t *testing.T) {
 
 func TestStubCommandsNotImplemented(t *testing.T) {
 	commands := [][]string{
-		{"discover"},
 		{"plan"},
 		{"upgrade"},
 		{"verify"},
@@ -104,6 +105,39 @@ func TestDiscoverMissingConfigFlag(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "not implemented") {
 		t.Fatalf("should fail on missing config before the stub, got %v", err)
+	}
+}
+
+func TestDiscoverLoadsConfigAndNeedsInventory(t *testing.T) {
+	configPath, _ := writeCLIConfig(t)
+	_, _, err := execute(t, "--config", configPath, "discover")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "not implemented") {
+		t.Fatalf("should load inventory, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "inventory") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestDiscoverHeldLock(t *testing.T) {
+	configPath, _ := writeCLIConfig(t)
+	dir := filepath.Dir(configPath)
+	lockPath := filepath.Join(dir, "state", "rosup.lock")
+	unlock, err := lockfile.Acquire(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = unlock() })
+
+	_, _, err = execute(t, "--config", configPath, "discover")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, lockfile.ErrLocked) {
+		t.Fatalf("got %v", err)
 	}
 }
 

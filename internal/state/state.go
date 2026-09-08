@@ -19,14 +19,15 @@ const (
 var ErrJobComplete = errors.New("state: job already complete")
 
 type DeviceJob struct {
-	Device    string    `json:"device"`
-	Release   string    `json:"release"`
-	Group     string    `json:"group"`
-	Stage     string    `json:"stage"`
-	Status    string    `json:"status"` // pending|in_progress|complete|failed
-	UpdatedAt time.Time `json:"updated_at"`
-	LastError string    `json:"last_error,omitempty"`
-	Attempt   int       `json:"attempt"`
+	Device    string          `json:"device"`
+	Release   string          `json:"release"`
+	Group     string          `json:"group"`
+	Stage     string          `json:"stage"`
+	Status    string          `json:"status"` // pending|in_progress|complete|failed
+	UpdatedAt time.Time       `json:"updated_at"`
+	LastError string          `json:"last_error,omitempty"`
+	Attempt   int             `json:"attempt"`
+	Facts     json.RawMessage `json:"facts,omitempty"`
 }
 
 func EnsureSecureDir(path string) error {

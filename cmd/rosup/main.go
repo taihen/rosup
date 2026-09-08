@@ -45,7 +45,7 @@ func newRootCmd() *cobra.Command {
 
 	root.AddCommand(
 		newVersionCmd(),
-		stubCmd("discover", "Read-only facts from a device"),
+		cli.NewDiscoverCmd(),
 		cli.NewReleaseCmd(),
 		stubCmd("plan", "Show what an upgrade would do"),
 		stubCmd("upgrade", "Run the upgrade for a group"),
