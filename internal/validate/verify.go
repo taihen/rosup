@@ -58,7 +58,7 @@ func snapshotNow(ctx context.Context, req Request, profileName string) (string, 
 	}
 	client, err := req.Dial(ctx, req.Config.SSH, req.Device.Address, port)
 	if err != nil {
-		return "", fmt.Errorf("validate: %s: ssh unreachable: %w", req.Device.Name, err)
+		return "", fmt.Errorf("validate: %s: %w: %w", req.Device.Name, ErrUnreachable, err)
 	}
 	defer func() { _ = client.Close() }()
 

@@ -164,6 +164,9 @@ func runDevice(ctx context.Context, cfg *config.Config, version string, d invent
 			if job.Status == state.StatusComplete {
 				return err
 			}
+			if isValidationStage(st) {
+				err = r.maybeDowngrade(err)
+			}
 			return markFailed(cfg.StateDir, job, err)
 		}
 	}
@@ -171,17 +174,18 @@ func runDevice(ctx context.Context, cfg *config.Config, version string, d invent
 }
 
 type deviceRun struct {
-	ctx      context.Context
-	cfg      *config.Config
-	version  string
-	d        inventory.Device
-	man      release.Manifest
-	opts     Options
-	job      *state.DeviceJob
-	client   transport.Client
-	backedUp bool
-	export   string
-	skipRB   *bool
+	ctx        context.Context
+	cfg        *config.Config
+	version    string
+	d          inventory.Device
+	man        release.Manifest
+	opts       Options
+	job        *state.DeviceJob
+	client     transport.Client
+	backedUp   bool
+	export     string
+	skipRB     *bool
+	downgraded bool
 }
 
 func (r *deviceRun) step(st string) error {
@@ -262,7 +266,11 @@ func (r *deviceRun) stagePackages() error {
 	if err := r.ensureClient(); err != nil {
 		return err
 	}
-	dir := filepath.Join(r.cfg.PackageDir, r.version)
+	return r.uploadFiles(r.version, files)
+}
+
+func (r *deviceRun) uploadFiles(version string, files []release.File) error {
+	dir := filepath.Join(r.cfg.PackageDir, version)
 	for _, f := range files {
 		local := filepath.Join(dir, f.Name)
 		if err := r.client.Upload(r.ctx, local, f.Name); err != nil {
@@ -313,7 +321,7 @@ func (r *deviceRun) waitReconnect() error {
 }
 
 func (r *deviceRun) validateRole() error {
-	return r.checkRole(false)
+	return r.checkRoleAt(r.version, false)
 }
 
 func (r *deviceRun) skipRouterbootStage(st string) (bool, error) {
@@ -371,10 +379,10 @@ func (r *deviceRun) validateAfterRouterboot() error {
 	if err := waitForReconnect(r.ctx, r.cfg, r.d, r.opts); err != nil {
 		return err
 	}
-	return r.checkRole(true)
+	return r.checkRoleAt(r.version, true)
 }
 
-func (r *deviceRun) checkRole(upgradeFirmware bool) error {
+func (r *deviceRun) checkRoleAt(target string, upgradeFirmware bool) error {
 	profile := r.d.ValidationProfile
 	if profile == "" {
 		profile = r.d.Role
@@ -382,13 +390,85 @@ func (r *deviceRun) checkRole(upgradeFirmware bool) error {
 	return validate.Check(r.ctx, validate.Request{
 		Config:          r.cfg,
 		Device:          r.d,
-		Target:          r.version,
+		Target:          target,
 		Dial:            r.opts.Dial,
 		Clock:           r.opts.Clock,
 		Profile:         profile,
 		UpgradeFirmware: upgradeFirmware,
 		RoleCheck:       validate.RoleChecks[profile],
 	})
+}
+
+func isValidationStage(st string) bool {
+	return st == StageValidateRole || st == StageValidateAfterRouterboot
+}
+
+func (r *deviceRun) maybeDowngrade(cause error) error {
+	if r.downgraded {
+		return cause
+	}
+	if errors.Is(cause, validate.ErrUnreachable) {
+		return cause
+	}
+	r.downgraded = true
+	if err := r.downgradeToPrevious(); err != nil {
+		return fmt.Errorf("%w (downgrade: %v)", cause, err)
+	}
+	return cause
+}
+
+func (r *deviceRun) downgradeToPrevious() error {
+	facts, err := factsFrom(r.job)
+	if err != nil {
+		return err
+	}
+	prev := facts.Version
+	if prev == "" || prev == r.version {
+		return fmt.Errorf("no previous release to restore")
+	}
+	man, err := release.Load(r.cfg.PackageDir, prev)
+	if err != nil {
+		return err
+	}
+	files, err := packagesToStage(facts, man)
+	if err != nil {
+		return err
+	}
+	r.closeClient()
+	if err := r.ensureClient(); err != nil {
+		return err
+	}
+	if err := r.uploadFiles(prev, files); err != nil {
+		return err
+	}
+	_, err = r.client.Run(r.ctx, cmdReboot)
+	r.closeClient()
+	if err != nil && r.ctx.Err() != nil {
+		return fmt.Errorf("upgrade: %s: %s: %w", r.d.Name, cmdReboot, r.ctx.Err())
+	}
+	if err := waitForReconnect(r.ctx, r.cfg, r.d, r.opts); err != nil {
+		return err
+	}
+	if err := r.copyBaseline(prev); err != nil {
+		return err
+	}
+	return r.checkRoleAt(prev, false)
+}
+
+func (r *deviceRun) copyBaseline(prev string) error {
+	src, err := validate.JobDir(r.cfg, r.d.Name, r.version)
+	if err != nil {
+		return err
+	}
+	baseline, err := validate.ReadBaseline(src)
+	if err != nil {
+		return err
+	}
+	dst, err := validate.JobDir(r.cfg, r.d.Name, prev)
+	if err != nil {
+		return err
+	}
+	return validate.WriteBaseline(dst, baseline)
 }
 
 func (r *deviceRun) complete() error {

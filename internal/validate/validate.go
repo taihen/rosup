@@ -51,6 +51,8 @@ type RoleFunc func(ctx context.Context, client transport.Client, baseline Baseli
 // Shared checks always run first; a missing entry means no role-specific work yet.
 var RoleChecks = map[string]RoleFunc{}
 
+var ErrUnreachable = errors.New("ssh unreachable")
+
 type Request struct {
 	Config          *config.Config
 	Device          inventory.Device
@@ -184,7 +186,7 @@ func Check(ctx context.Context, req Request) error {
 	}
 	client, err := req.Dial(ctx, req.Config.SSH, req.Device.Address, port)
 	if err != nil {
-		return fmt.Errorf("validate: %s: ssh unreachable: %w", req.Device.Name, err)
+		return fmt.Errorf("validate: %s: %w: %w", req.Device.Name, ErrUnreachable, err)
 	}
 	defer func() { _ = client.Close() }()
 

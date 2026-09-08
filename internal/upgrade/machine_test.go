@@ -520,6 +520,88 @@ func TestValidateRoleRequiresTargetVersionAndPackages(t *testing.T) {
 	}
 }
 
+func TestGuardedDowngradeOnValidationFailureWhenSSHUp(t *testing.T) {
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	writeRelease(t, cfg, current, []release.File{
+		npkVer("routeros", "arm", current),
+		npkVer("wireless", "arm", current),
+	})
+	sim := world.sim("router-01")
+	sim.failValidateVersion = true
+
+	err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	job, err := state.Load(cfg.StateDir, "router-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != state.StatusFailed {
+		t.Fatalf("status %q", job.Status)
+	}
+	if job.Stage != upgrade.StageValidateRole {
+		t.Fatalf("stage %q", job.Stage)
+	}
+
+	var prev []string
+	for _, remote := range sim.uploadedRemotes() {
+		if strings.Contains(remote, current) {
+			prev = append(prev, remote)
+		}
+	}
+	if strings.Join(prev, ",") != "routeros-arm-6.49.18.npk,wireless-6.49.18-arm.npk" {
+		t.Fatalf("previous-version uploads %v (all %v)", prev, sim.uploadedRemotes())
+	}
+	if sim.reboots < 2 {
+		t.Fatalf("reboots %d, want package reboot plus downgrade reboot", sim.reboots)
+	}
+	if containsPrefix(sim.runs, "/system backup load") {
+		t.Fatal("auto-applied binary backup")
+	}
+	if sim.version != current {
+		t.Fatalf("version after guarded downgrade %q, want %q", sim.version, current)
+	}
+}
+
+func TestNoDowngradeWhenValidationSSHIsDown(t *testing.T) {
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	writeRelease(t, cfg, current, []release.File{
+		npkVer("routeros", "arm", current),
+		npkVer("wireless", "arm", current),
+	})
+	sim := world.sim("router-01")
+	sim.failValidateSSH = true
+
+	err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	job, err := state.Load(cfg.StateDir, "router-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != state.StatusFailed {
+		t.Fatalf("status %q", job.Status)
+	}
+	if job.Stage != upgrade.StageValidateRole {
+		t.Fatalf("stage %q", job.Stage)
+	}
+	for _, remote := range sim.uploadedRemotes() {
+		if strings.Contains(remote, current) {
+			t.Fatalf("downgraded while SSH down: %v", sim.uploadedRemotes())
+		}
+	}
+	if sim.reboots != 1 {
+		t.Fatalf("reboots %d, want 1", sim.reboots)
+	}
+	if containsPrefix(sim.runs, "/system backup load") {
+		t.Fatal("auto-applied binary backup")
+	}
+}
+
 type fakeClock struct {
 	start  time.Time
 	now    time.Time
@@ -588,6 +670,10 @@ func (w *fakeWorld) dial(ctx context.Context, _ config.SSHConfig, address string
 	}
 	if sim.rebooted {
 		sim.reconnectAttempts++
+		sim.postReconnectDials++
+		if sim.failValidateSSH && sim.postReconnectDials > 1 {
+			return nil, errors.New("ssh down")
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -596,28 +682,36 @@ func (w *fakeWorld) dial(ctx context.Context, _ config.SSHConfig, address string
 }
 
 type deviceSim struct {
-	name               string
-	version            string
-	target             string
-	packages           []string
-	applyOnReboot      bool
-	rebooted           bool
-	reboots            int
-	uploads            [][2]string
-	runs               []string
-	files              map[string][]byte
-	dialErr            error
-	reconnectFailsLeft int
-	reconnectAttempts  int
-	currentFirmware    string
-	upgradeFirmware    string
-	routerbootPending  bool
+	name                string
+	version             string
+	target              string
+	packages            []string
+	applyOnReboot       bool
+	rebooted            bool
+	reboots             int
+	uploads             [][2]string
+	runs                []string
+	files               map[string][]byte
+	dialErr             error
+	reconnectFailsLeft  int
+	reconnectAttempts   int
+	currentFirmware     string
+	upgradeFirmware     string
+	routerbootPending   bool
+	failValidateSSH     bool
+	failValidateVersion bool
+	postReconnectDials  int
+	pendingVersion      string
 }
 
 func (s *deviceSim) Run(_ context.Context, command string) (string, error) {
 	s.runs = append(s.runs, command)
 	switch {
 	case command == "/system resource print":
+		if s.failValidateVersion && s.rebooted && s.version == s.target {
+			s.failValidateVersion = false
+			return resourcePrint("6.49.99"), nil
+		}
 		return resourcePrint(s.version), nil
 	case command == "/system package print":
 		return packagePrint(s.version, s.packages), nil
@@ -644,7 +738,11 @@ func (s *deviceSim) Run(_ context.Context, command string) (string, error) {
 		s.reboots++
 		s.rebooted = true
 		if s.applyOnReboot {
-			s.version = s.target
+			if s.pendingVersion != "" {
+				s.version = s.pendingVersion
+			} else {
+				s.version = s.target
+			}
 		}
 		if s.routerbootPending {
 			s.currentFirmware = s.upgradeFirmware
@@ -670,6 +768,9 @@ func (s *deviceSim) Upload(_ context.Context, local, remote string) error {
 		return err
 	}
 	s.uploads = append(s.uploads, [2]string{local, remote})
+	if v := versionFromNPK(remote); v != "" {
+		s.pendingVersion = v
+	}
 	return nil
 }
 
@@ -811,9 +912,13 @@ func writeExtraNPK(t *testing.T, cfg *config.Config, version string, f release.F
 }
 
 func npk(pkg, arch string) release.File {
-	name := pkg + "-" + target + "-" + arch + ".npk"
+	return npkVer(pkg, arch, target)
+}
+
+func npkVer(pkg, arch, version string) release.File {
+	name := pkg + "-" + version + "-" + arch + ".npk"
 	if pkg == "routeros" {
-		name = "routeros-" + arch + "-" + target + ".npk"
+		name = "routeros-" + arch + "-" + version + ".npk"
 	}
 	return release.File{
 		Name:         name,
@@ -822,6 +927,16 @@ func npk(pkg, arch string) release.File {
 		SHA256:       "abc",
 		Size:         1000,
 	}
+}
+
+func versionFromNPK(name string) string {
+	base := strings.TrimSuffix(filepath.Base(name), ".npk")
+	for _, p := range strings.Split(base, "-") {
+		if p != "" && p[0] >= '0' && p[0] <= '9' && strings.Contains(p, ".") {
+			return p
+		}
+	}
+	return ""
 }
 
 func device(name, group string, order int, deps []string) inventory.Device {
