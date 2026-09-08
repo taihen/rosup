@@ -47,7 +47,7 @@ func newRootCmd() *cobra.Command {
 		newVersionCmd(),
 		cli.NewDiscoverCmd(),
 		cli.NewReleaseCmd(),
-		stubCmd("plan", "Show what an upgrade would do"),
+		cli.NewPlanCmd(),
 		stubCmd("upgrade", "Run the upgrade for a group"),
 		stubCmd("verify", "Re-check a device against its role profile"),
 		stubCmd("rollback", "Downgrade packages to a complete local release"),

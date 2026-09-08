@@ -65,7 +65,6 @@ func TestUnknownCommandExitsNonZero(t *testing.T) {
 
 func TestStubCommandsNotImplemented(t *testing.T) {
 	commands := [][]string{
-		{"plan"},
 		{"upgrade"},
 		{"verify"},
 		{"rollback"},
@@ -137,6 +136,49 @@ func TestDiscoverHeldLock(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	if !errors.Is(err, lockfile.ErrLocked) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestPlanRequiresRelease(t *testing.T) {
+	_, _, err := execute(t, "plan")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "--release") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestPlanHeldLock(t *testing.T) {
+	configPath, _ := writeCLIConfig(t)
+	dir := filepath.Dir(configPath)
+	lockPath := filepath.Join(dir, "state", "rosup.lock")
+	unlock, err := lockfile.Acquire(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = unlock() })
+
+	_, _, err = execute(t, "--config", configPath, "--release", "6.49.21", "plan")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, lockfile.ErrLocked) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestPlanMissingManifest(t *testing.T) {
+	configPath, _ := writeCLIConfig(t)
+	_, _, err := execute(t, "--config", configPath, "plan", "--release", "6.49.21")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "not implemented") {
+		t.Fatalf("should load the local manifest, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "6.49.21") && !strings.Contains(err.Error(), "manifest") {
 		t.Fatalf("got %v", err)
 	}
 }

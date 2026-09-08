@@ -295,6 +295,25 @@ func writeManifest(dir string, man *Manifest) error {
 	return writeFile(filepath.Join(dir, "manifest.json"), data)
 }
 
+func Load(packageDir, version string) (Manifest, error) {
+	if version == "" || version != filepath.Base(version) {
+		return Manifest{}, fmt.Errorf("release: invalid version %q", version)
+	}
+	path := filepath.Join(packageDir, version, "manifest.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Manifest{}, fmt.Errorf("release: read %s: %w", path, err)
+	}
+	var man Manifest
+	if err := json.Unmarshal(data, &man); err != nil {
+		return Manifest{}, fmt.Errorf("release: parse %s: %w", path, err)
+	}
+	if man.Version != "" && man.Version != version {
+		return Manifest{}, fmt.Errorf("release: manifest version %q does not match %q", man.Version, version)
+	}
+	return man, nil
+}
+
 func List(packageDir string) ([]string, error) {
 	entries, err := os.ReadDir(packageDir)
 	if err != nil {
