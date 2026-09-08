@@ -1,0 +1,24 @@
+name: CI
+on:
+  push:
+    branches: [main, feat/**]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v3
+        with:
+          install: true
+      - name: Verify toolchain
+        run: mise exec -- go version
+      - name: Test
+        run: mise exec -- go test ./...
+      - name: Build
+        run: mise exec -- go build -o dist/rosup ./cmd/rosup
+      - name: Lint
+        run: mise exec -- golangci-lint run ./...

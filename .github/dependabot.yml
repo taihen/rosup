@@ -1,0 +1,12 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule: { interval: daily }
+    assignees: [taihen]
+    labels: [dependencies, go]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: daily }
+    assignees: [taihen]
+    labels: [dependencies, github_actions]

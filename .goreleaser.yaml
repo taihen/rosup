@@ -1,0 +1,35 @@
+version: 2
+builds:
+  - id: rosup
+    main: ./cmd/rosup
+    binary: rosup
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64]
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.ShortCommit}}
+      - -X main.date={{.Date}}
+archives:
+  - id: linux-amd64
+    ids: [rosup]
+    name_template: "rosup-linux-amd64"
+    formats: [binary]
+checksum:
+  name_template: checksums.txt
+kos:
+  - build: rosup
+    main: ./cmd/rosup
+    base_image: ghcr.io/taihen/base-image:v2026.08.11
+    repositories:
+      - ghcr.io/taihen/rosup
+    platforms:
+      - linux/amd64
+    tags:
+      - "{{.Tag}}"
+      - "{{.Version}}"
+      - "{{if not .Prerelease}}latest{{end}}"
+    user: "65532:65532"
+    sbom: spdx
+    bare: true
