@@ -143,3 +143,28 @@ func parseBackupTime(device, filename string) (time.Time, bool) {
 	}
 	return ts, true
 }
+
+func Restore(ctx context.Context, device string, client transport.Client, localPath string) error {
+	if client == nil {
+		return errors.New("backup: nil client")
+	}
+	if filepath.Ext(localPath) != remoteBackupExt {
+		return fmt.Errorf("backup: restore file must be a %s file", remoteBackupExt)
+	}
+	if _, err := os.Stat(localPath); err != nil {
+		return fmt.Errorf("backup: %s: %w", localPath, err)
+	}
+	remote := filepath.Base(localPath)
+	if remote == "" || remote == "." || remote == string(filepath.Separator) {
+		return fmt.Errorf("backup: invalid restore path %q", localPath)
+	}
+	if err := client.Upload(ctx, localPath, remote); err != nil {
+		return fmt.Errorf("backup: %s: upload %s: %w", device, remote, err)
+	}
+	stem := strings.TrimSuffix(remote, remoteBackupExt)
+	cmd := "/system backup load name=" + stem
+	if _, err := client.Run(ctx, cmd); err != nil {
+		return fmt.Errorf("backup: %s: %s: %w", device, cmd, err)
+	}
+	return nil
+}

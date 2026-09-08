@@ -63,21 +63,131 @@ func TestUnknownCommandExitsNonZero(t *testing.T) {
 	}
 }
 
-func TestStubCommandsNotImplemented(t *testing.T) {
-	commands := [][]string{
-		{"rollback"},
-		{"backup", "restore"},
+func TestRollbackRequiresDevice(t *testing.T) {
+	_, _, err := execute(t, "rollback", "--to-version", "6.49.18")
+	if err == nil {
+		t.Fatal("expected error")
 	}
-	for _, args := range commands {
-		t.Run(strings.Join(args, " "), func(t *testing.T) {
-			_, _, err := execute(t, args...)
-			if err == nil {
-				t.Fatal("expected error")
-			}
-			if !strings.Contains(err.Error(), "not implemented") {
-				t.Fatalf("got %v", err)
-			}
-		})
+	if strings.Contains(err.Error(), "not implemented") {
+		t.Fatalf("rollback should require a device, got %v", err)
+	}
+}
+
+func TestRollbackRequiresToVersion(t *testing.T) {
+	_, _, err := execute(t, "rollback", "router-01")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "--to-version") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestRollbackHeldLock(t *testing.T) {
+	configPath, _ := writeCLIConfig(t)
+	dir := filepath.Dir(configPath)
+	lockPath := filepath.Join(dir, "state", "rosup.lock")
+	unlock, err := lockfile.Acquire(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = unlock() })
+
+	_, _, err = execute(t, "--config", configPath, "rollback", "router-01", "--to-version", "6.49.18")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, lockfile.ErrLocked) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestRollbackUnknownDevice(t *testing.T) {
+	configPath, _ := writeCLIConfig(t)
+	writeCLIInventory(t, configPath, `devices:
+  - name: other
+    address: 192.0.2.9
+    role: access
+    group: edge
+    order: 1
+    validation_profile: access
+`)
+
+	_, _, err := execute(t, "--config", configPath, "rollback", "router-01", "--to-version", "6.49.18")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "not implemented") {
+		t.Fatalf("should look up inventory, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "router-01") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestBackupRestoreRequiresDevice(t *testing.T) {
+	_, _, err := execute(t, "backup", "restore", "--file", "/tmp/x.backup")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "not implemented") {
+		t.Fatalf("restore should require a device, got %v", err)
+	}
+}
+
+func TestBackupRestoreRequiresFile(t *testing.T) {
+	_, _, err := execute(t, "backup", "restore", "router-01")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "--file") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestBackupRestoreHeldLock(t *testing.T) {
+	configPath, _ := writeCLIConfig(t)
+	dir := filepath.Dir(configPath)
+	lockPath := filepath.Join(dir, "state", "rosup.lock")
+	unlock, err := lockfile.Acquire(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = unlock() })
+
+	_, _, err = execute(t, "--config", configPath, "backup", "restore", "router-01", "--file", filepath.Join(dir, "x.backup"))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, lockfile.ErrLocked) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestBackupRestoreUnknownDevice(t *testing.T) {
+	configPath, _ := writeCLIConfig(t)
+	writeCLIInventory(t, configPath, `devices:
+  - name: other
+    address: 192.0.2.9
+    role: access
+    group: edge
+    order: 1
+    validation_profile: access
+`)
+	backupFile := filepath.Join(filepath.Dir(configPath), "golem.backup")
+	if err := os.WriteFile(backupFile, []byte("backup"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := execute(t, "--config", configPath, "backup", "restore", "router-01", "--file", backupFile)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "not implemented") {
+		t.Fatalf("should look up inventory, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "router-01") {
+		t.Fatalf("got %v", err)
 	}
 }
 
@@ -312,6 +422,17 @@ ssh:
 		t.Fatal(err)
 	}
 	return configPath, packageDir
+}
+
+func writeCLIInventory(t *testing.T, configPath, body string) {
+	t.Helper()
+	inv := filepath.Join(filepath.Dir(configPath), "ops", "inventory", "devices.yaml")
+	if err := os.MkdirAll(filepath.Dir(inv), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(inv, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestReleaseListMissingConfig(t *testing.T) {

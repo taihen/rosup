@@ -20,6 +20,7 @@ type fakeClient struct {
 	files     map[string][]byte
 	download  [][2]string
 	removed   []string
+	uploads   [][2]string
 }
 
 func (f *fakeClient) Run(_ context.Context, command string) (string, error) {
@@ -41,11 +42,23 @@ func (f *fakeClient) Run(_ context.Context, command string) (string, error) {
 		f.files[name+".backup"] = []byte("binary-backup")
 		return "", nil
 	}
+	if strings.HasPrefix(command, "/system backup load name=") {
+		return "", nil
+	}
 	return "", errors.New("unexpected command " + command)
 }
 
-func (f *fakeClient) Upload(context.Context, string, string) error {
-	return errors.New("upload not allowed")
+func (f *fakeClient) Upload(_ context.Context, local, remote string) error {
+	data, err := os.ReadFile(local)
+	if err != nil {
+		return err
+	}
+	if f.files == nil {
+		f.files = map[string][]byte{}
+	}
+	f.files[remote] = data
+	f.uploads = append(f.uploads, [2]string{local, remote})
+	return nil
 }
 
 func (f *fakeClient) Download(_ context.Context, remote, local string) error {
@@ -378,5 +391,60 @@ func TestExportAndBackupExportErrorCreatesNoLocalBackup(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(cfg.BackupDir, "golem")); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatal("created backup dir after export failure")
+	}
+}
+
+func TestRestoreUploadsBackupAndLoads(t *testing.T) {
+	dir := t.TempDir()
+	local := filepath.Join(dir, "golem.backup")
+	if err := os.WriteFile(local, []byte("binary-backup"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeClient{}
+
+	if err := backup.Restore(context.Background(), "golem", client, local); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.uploads) != 1 || client.uploads[0][1] != "golem.backup" {
+		t.Fatalf("uploads %v", client.uploads)
+	}
+	if string(client.files["golem.backup"]) != "binary-backup" {
+		t.Fatalf("remote file %q", client.files["golem.backup"])
+	}
+	if len(client.runs) != 1 || client.runs[0] != "/system backup load name=golem" {
+		t.Fatalf("commands %v", client.runs)
+	}
+}
+
+func TestRestoreRequiresBackupSuffix(t *testing.T) {
+	dir := t.TempDir()
+	local := filepath.Join(dir, "golem.txt")
+	if err := os.WriteFile(local, []byte("nope"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeClient{}
+	err := backup.Restore(context.Background(), "golem", client, local)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), ".backup") {
+		t.Fatalf("got %v", err)
+	}
+	if len(client.uploads) != 0 {
+		t.Fatalf("uploaded %v", client.uploads)
+	}
+	if len(client.runs) != 0 {
+		t.Fatalf("commands %v", client.runs)
+	}
+}
+
+func TestRestoreMissingFile(t *testing.T) {
+	client := &fakeClient{}
+	err := backup.Restore(context.Background(), "golem", client, filepath.Join(t.TempDir(), "missing.backup"))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if len(client.uploads) != 0 {
+		t.Fatalf("uploaded %v", client.uploads)
 	}
 }

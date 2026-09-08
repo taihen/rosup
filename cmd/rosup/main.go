@@ -50,8 +50,8 @@ func newRootCmd() *cobra.Command {
 		cli.NewPlanCmd(),
 		cli.NewUpgradeCmd(),
 		cli.NewVerifyCmd(),
-		stubCmd("rollback", "Downgrade packages to a complete local release"),
-		newBackupCmd(),
+		cli.NewRollbackCmd(),
+		cli.NewBackupCmd(),
 	)
 	return root
 }
@@ -90,30 +90,6 @@ func newVersionCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, err := fmt.Fprintf(cmd.OutOrStdout(), "rosup %s (%s) %s\n", version, commit, date)
 			return err
-		},
-	}
-}
-
-func newBackupCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "backup",
-		Short: "Manage local binary backups",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return errors.New("a backup subcommand is required")
-		},
-	}
-	cmd.AddCommand(stubCmd("restore", "Restore a local backup file to a device"))
-	return cmd
-}
-
-func stubCmd(use, short string) *cobra.Command {
-	return &cobra.Command{
-		Use:   use,
-		Short: short,
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return errors.New("not implemented")
 		},
 	}
 }
