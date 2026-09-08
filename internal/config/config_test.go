@@ -96,6 +96,12 @@ func TestLoadOpsDefaults(t *testing.T) {
 	if cfg.Ops.AuditDir != "audit" {
 		t.Fatalf("audit dir %q", cfg.Ops.AuditDir)
 	}
+	if cfg.Ops.SSHPrivateKeyPath != "" {
+		t.Fatalf("ops.ssh_private_key_path %q, want empty", cfg.Ops.SSHPrivateKeyPath)
+	}
+	if cfg.Ops.GitKnownHostsPath != "" {
+		t.Fatalf("ops.git_known_hosts_path %q, want empty", cfg.Ops.GitKnownHostsPath)
+	}
 }
 
 func TestLoadSetsConfigPath(t *testing.T) {
@@ -158,6 +164,37 @@ ssh:
 		if got[name] != want {
 			t.Errorf("%s: got %q want %q", name, got[name], want)
 		}
+	}
+}
+
+func TestLoadResolvesRelativeOpsGitSSHPaths(t *testing.T) {
+	p := writeYAML(t, `
+data_dir: data
+state_dir: state
+package_dir: packages
+backup_dir: backups
+lock_path: state/rosup.lock
+architectures: [arm]
+channel: long-term
+ops:
+  path: ops
+  remote: git@example.com:org/ops.git
+  ssh_private_key_path: ssh/id_ed25519_ops
+  git_known_hosts_path: ssh/git_known_hosts
+ssh:
+  private_key_path: ssh/id_ed25519
+  known_hosts_path: ssh/known_hosts
+`)
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Dir(p)
+	if cfg.Ops.SSHPrivateKeyPath != filepath.Join(dir, "ssh", "id_ed25519_ops") {
+		t.Fatalf("ops.ssh_private_key_path %q", cfg.Ops.SSHPrivateKeyPath)
+	}
+	if cfg.Ops.GitKnownHostsPath != filepath.Join(dir, "ssh", "git_known_hosts") {
+		t.Fatalf("ops.git_known_hosts_path %q", cfg.Ops.GitKnownHostsPath)
 	}
 }
 

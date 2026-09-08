@@ -2,7 +2,10 @@ package auditgit_test
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"os"
 	"path/filepath"
@@ -15,6 +18,7 @@ import (
 	"github.com/taihen/rosup/internal/auditgit"
 	"github.com/taihen/rosup/internal/config"
 	"github.com/taihen/rosup/internal/state"
+	"golang.org/x/crypto/ssh"
 )
 
 type gitEnv struct {
@@ -257,6 +261,68 @@ func TestSourceDoesNotExecGit(t *testing.T) {
 	}
 }
 
+func TestPushErrorsWhenGitSSHKeyMissing(t *testing.T) {
+	env := setupOpsRepo(t)
+	keyPath := filepath.Join(t.TempDir(), "missing-ops-key")
+	env.cfg.Ops.SSHPrivateKeyPath = keyPath
+	env.cfg.Ops.GitKnownHostsPath = writeDummyKnownHosts(t)
+
+	err := auditgit.Push(context.Background(), env.cfg, completeJob(), "job-1", auditgit.Artifacts{
+		Export: "#\n",
+		Result: map[string]string{"ok": "true"},
+		Log:    "ok\n",
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "auditgit:") {
+		t.Fatalf("want auditgit wrap, got %v", err)
+	}
+	if !strings.Contains(err.Error(), keyPath) {
+		t.Fatalf("want key path in error, got %v", err)
+	}
+}
+
+func TestPushSucceedsWithGitSSHAuthOnFileRemote(t *testing.T) {
+	env := setupOpsRepo(t)
+	env.cfg.Ops.SSHPrivateKeyPath = writeOpsGitPrivateKey(t)
+	env.cfg.Ops.GitKnownHostsPath = writeDummyKnownHosts(t)
+
+	if err := auditgit.Push(context.Background(), env.cfg, completeJob(), "job-1", auditgit.Artifacts{
+		Export: "# with-auth\n",
+		Result: map[string]string{"ok": "true"},
+		Log:    "ok\n",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	commit := headCommit(t, env.bare)
+	if readCommitFile(t, commit, "audit/golem/job-1/export.rsc") != "# with-auth\n" {
+		t.Fatal("missing audit after file-protocol push with ssh auth configured")
+	}
+}
+
+func TestPushErrorsWhenGitKnownHostsPathEmpty(t *testing.T) {
+	env := setupOpsRepo(t)
+	env.cfg.Ops.SSHPrivateKeyPath = writeOpsGitPrivateKey(t)
+	env.cfg.Ops.GitKnownHostsPath = ""
+
+	err := auditgit.Push(context.Background(), env.cfg, completeJob(), "job-1", auditgit.Artifacts{
+		Export: "#\n",
+		Result: map[string]string{"ok": "true"},
+		Log:    "ok\n",
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "auditgit:") {
+		t.Fatalf("want auditgit wrap, got %v", err)
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "known_hosts") {
+		t.Fatalf("want known_hosts in error, got %v", err)
+	}
+}
+
 func completeJob() *state.DeviceJob {
 	return &state.DeviceJob{
 		Device:    "golem",
@@ -449,4 +515,39 @@ func testSig() *object.Signature {
 		Email: "tester@localhost",
 		When:  time.Date(2026, 9, 8, 11, 0, 0, 0, time.UTC),
 	}
+}
+
+func writeOpsGitPrivateKey(t *testing.T) string {
+	t.Helper()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := ssh.MarshalPrivateKey(priv, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "id_ed25519_ops")
+	if err := os.WriteFile(path, pem.EncodeToMemory(block), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func writeDummyKnownHosts(t *testing.T) string {
+	t.Helper()
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sshPub, err := ssh.NewPublicKey(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "git_known_hosts")
+	line := "github.com " + string(ssh.MarshalAuthorizedKey(sshPub))
+	if err := os.WriteFile(path, []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

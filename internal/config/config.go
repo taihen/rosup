@@ -41,10 +41,12 @@ type Config struct {
 }
 
 type OpsConfig struct {
-	Path          string `yaml:"path"`
-	Remote        string `yaml:"remote"`
-	InventoryFile string `yaml:"inventory_file"` // default "inventory/devices.yaml"
-	AuditDir      string `yaml:"audit_dir"`      // default "audit"
+	Path              string `yaml:"path"`
+	Remote            string `yaml:"remote"`
+	InventoryFile     string `yaml:"inventory_file"`       // default "inventory/devices.yaml"
+	AuditDir          string `yaml:"audit_dir"`            // default "audit"
+	SSHPrivateKeyPath string `yaml:"ssh_private_key_path"` // deploy key for ops git, not RouterOS
+	GitKnownHostsPath string `yaml:"git_known_hosts_path"` // GitHub host keys; NEVER the RouterOS TOFU file
 }
 
 type SSHConfig struct {
@@ -193,6 +195,12 @@ func resolvePaths(cfg *Config, base string) error {
 		return err
 	}
 	if cfg.Ops.Path, err = resolvePath(base, cfg.Ops.Path); err != nil {
+		return err
+	}
+	if cfg.Ops.SSHPrivateKeyPath, err = resolvePath(base, cfg.Ops.SSHPrivateKeyPath); err != nil {
+		return err
+	}
+	if cfg.Ops.GitKnownHostsPath, err = resolvePath(base, cfg.Ops.GitKnownHostsPath); err != nil {
 		return err
 	}
 	if cfg.SSH.PrivateKeyPath, err = resolvePath(base, cfg.SSH.PrivateKeyPath); err != nil {

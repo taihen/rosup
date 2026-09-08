@@ -11,6 +11,8 @@ import (
 
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/transport"
+	gitssh "github.com/go-git/go-git/v5/plumbing/transport/ssh"
 
 	"github.com/taihen/rosup/internal/config"
 	"github.com/taihen/rosup/internal/redact"
@@ -42,6 +44,11 @@ func Push(ctx context.Context, cfg *config.Config, job *state.DeviceJob, jobID s
 		return err
 	}
 
+	auth, err := gitAuth(cfg)
+	if err != nil {
+		return err
+	}
+
 	repo, err := git.PlainOpen(cfg.Ops.Path)
 	if err != nil {
 		return fmt.Errorf("auditgit: open %s: %w", cfg.Ops.Path, err)
@@ -51,7 +58,7 @@ func Push(ctx context.Context, cfg *config.Config, job *state.DeviceJob, jobID s
 		return fmt.Errorf("auditgit: worktree: %w", err)
 	}
 
-	if err := wt.PullContext(ctx, &git.PullOptions{}); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
+	if err := wt.PullContext(ctx, &git.PullOptions{Auth: auth}); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 		return fmt.Errorf("auditgit: pull: %w", err)
 	}
 
@@ -97,10 +104,30 @@ func Push(ctx context.Context, cfg *config.Config, job *state.DeviceJob, jobID s
 		return fmt.Errorf("auditgit: commit: %w", err)
 	}
 
-	if err := repo.PushContext(ctx, &git.PushOptions{}); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
+	if err := repo.PushContext(ctx, &git.PushOptions{Auth: auth}); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 		return fmt.Errorf("auditgit: push: %w", err)
 	}
 	return nil
+}
+
+func gitAuth(cfg *config.Config) (transport.AuthMethod, error) {
+	keyPath := cfg.Ops.SSHPrivateKeyPath
+	if keyPath == "" {
+		return nil, nil
+	}
+	if cfg.Ops.GitKnownHostsPath == "" {
+		return nil, errors.New("auditgit: ops.git_known_hosts_path is required when ops.ssh_private_key_path is set")
+	}
+	auth, err := gitssh.NewPublicKeysFromFile("git", keyPath, "")
+	if err != nil {
+		return nil, fmt.Errorf("auditgit: load ops git ssh key %s: %w", keyPath, err)
+	}
+	cb, err := gitssh.NewKnownHostsCallback(cfg.Ops.GitKnownHostsPath)
+	if err != nil {
+		return nil, fmt.Errorf("auditgit: load ops git known_hosts %s: %w", cfg.Ops.GitKnownHostsPath, err)
+	}
+	auth.HostKeyCallback = cb
+	return auth, nil
 }
 
 func validateName(kind, name string) error {
