@@ -65,7 +65,6 @@ func TestUnknownCommandExitsNonZero(t *testing.T) {
 
 func TestStubCommandsNotImplemented(t *testing.T) {
 	commands := [][]string{
-		{"upgrade"},
 		{"verify"},
 		{"rollback"},
 		{"backup", "restore"},
@@ -132,6 +131,35 @@ func TestDiscoverHeldLock(t *testing.T) {
 	t.Cleanup(func() { _ = unlock() })
 
 	_, _, err = execute(t, "--config", configPath, "discover")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, lockfile.ErrLocked) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestUpgradeRequiresRelease(t *testing.T) {
+	_, _, err := execute(t, "upgrade")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "--release") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestUpgradeHeldLock(t *testing.T) {
+	configPath, _ := writeCLIConfig(t)
+	dir := filepath.Dir(configPath)
+	lockPath := filepath.Join(dir, "state", "rosup.lock")
+	unlock, err := lockfile.Acquire(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = unlock() })
+
+	_, _, err = execute(t, "--config", configPath, "--release", "6.49.21", "upgrade")
 	if err == nil {
 		t.Fatal("expected error")
 	}

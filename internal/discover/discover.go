@@ -97,6 +97,16 @@ func Format(w io.Writer, results []Result) error {
 	return nil
 }
 
+func Probe(ctx context.Context, cfg *config.Config, d inventory.Device, dial DialFunc) (Facts, error) {
+	if cfg == nil {
+		return Facts{}, errors.New("discover: nil config")
+	}
+	if dial == nil {
+		dial = transport.Dial
+	}
+	return probe(ctx, cfg, d, dial)
+}
+
 func probe(ctx context.Context, cfg *config.Config, d inventory.Device, dial DialFunc) (Facts, error) {
 	port := d.Port
 	if port == 0 {
