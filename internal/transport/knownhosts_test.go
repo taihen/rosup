@@ -122,6 +122,24 @@ func TestTOFUSecondConnectDifferentKeyFailsAndLeavesFileUnchanged(t *testing.T) 
 	}
 }
 
+func TestTOFUFailedUserAuthDoesNotWriteKnownHosts(t *testing.T) {
+	cfg, _ := testSSHConfig(t, true)
+	otherUserKey := generateSigner(t).PublicKey()
+	srv := startTestSSHServer(t, otherUserKey, generateSigner(t))
+
+	ctx := context.Background()
+	client, err := transport.Dial(ctx, cfg, srv.host, srv.port)
+	if err == nil {
+		_ = client.Close()
+		t.Fatal("expected user auth failure")
+	}
+
+	_, _, _, exists := knownHostsState(t, cfg.KnownHostsPath)
+	if exists {
+		t.Fatal("known_hosts was written after failed user auth")
+	}
+}
+
 func TestTOFUDisabledEmptyKnownHostsDoesNotWrite(t *testing.T) {
 	cfg, userKey := testSSHConfig(t, false)
 	hostKey := generateSigner(t)

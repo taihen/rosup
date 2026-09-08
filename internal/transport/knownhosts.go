@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/taihen/rosup/internal/state"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 )
@@ -17,27 +16,31 @@ var (
 	ErrUnknownHost     = errors.New("ssh: unknown host")
 )
 
-func hostKeyCallback(knownHostsPath string, tofu bool) ssh.HostKeyCallback {
-	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
-		err := checkKnownHost(knownHostsPath, hostname, remote, key)
-		if err == nil {
-			return nil
-		}
-		var keyErr *knownhosts.KeyError
-		if !errors.As(err, &keyErr) {
-			return err
-		}
-		if len(keyErr.Want) > 0 {
-			return fmt.Errorf("%w for %s", ErrHostKeyMismatch, hostname)
-		}
-		if !tofu {
-			return fmt.Errorf("%w %s (tofu disabled)", ErrUnknownHost, hostname)
-		}
-		if writeErr := appendKnownHost(knownHostsPath, hostname, key); writeErr != nil {
-			return writeErr
-		}
+type hostKeyPin struct {
+	path     string
+	tofu     bool
+	hostname string
+	key      ssh.PublicKey
+}
+
+func (p *hostKeyPin) callback(hostname string, remote net.Addr, key ssh.PublicKey) error {
+	err := checkKnownHost(p.path, hostname, remote, key)
+	if err == nil {
 		return nil
 	}
+	var keyErr *knownhosts.KeyError
+	if !errors.As(err, &keyErr) {
+		return err
+	}
+	if len(keyErr.Want) > 0 {
+		return fmt.Errorf("%w for %s", ErrHostKeyMismatch, hostname)
+	}
+	if !p.tofu {
+		return fmt.Errorf("%w %s (tofu disabled)", ErrUnknownHost, hostname)
+	}
+	p.hostname = hostname
+	p.key = key
+	return nil
 }
 
 func checkKnownHost(path, hostname string, remote net.Addr, key ssh.PublicKey) error {
@@ -56,8 +59,12 @@ func checkKnownHost(path, hostname string, remote net.Addr, key ssh.PublicKey) e
 }
 
 func appendKnownHost(path, hostname string, key ssh.PublicKey) error {
-	if err := state.EnsureSecureDir(filepath.Dir(path)); err != nil {
-		return err
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("transport: mkdir %s: %w", dir, err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return fmt.Errorf("transport: chmod %s: %w", dir, err)
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {

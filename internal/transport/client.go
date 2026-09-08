@@ -68,10 +68,11 @@ func Dial(ctx context.Context, cfg config.SSHConfig, address string, port int) (
 		_ = nConn.SetDeadline(time.Now().Add(cfg.Timeout))
 	}
 
+	pin := &hostKeyPin{path: cfg.KnownHostsPath, tofu: cfg.TOFU}
 	sshCfg := &ssh.ClientConfig{
 		User:            cfg.Username,
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
-		HostKeyCallback: hostKeyCallback(cfg.KnownHostsPath, cfg.TOFU),
+		HostKeyCallback: pin.callback,
 		Timeout:         cfg.Timeout,
 	}
 	conn, chans, reqs, err := ssh.NewClientConn(nConn, addr, sshCfg)
@@ -79,6 +80,12 @@ func Dial(ctx context.Context, cfg config.SSHConfig, address string, port int) (
 		return nil, fmt.Errorf("transport: ssh handshake: %w", err)
 	}
 	_ = nConn.SetDeadline(time.Time{})
+	if pin.key != nil {
+		if err := appendKnownHost(cfg.KnownHostsPath, pin.hostname, pin.key); err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+	}
 
 	return &sshClient{conn: ssh.NewClient(conn, chans, reqs)}, nil
 }
