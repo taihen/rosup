@@ -130,6 +130,78 @@ func TestHappyPathReachesCompleteWithoutRouterBOOT(t *testing.T) {
 	}
 }
 
+func TestEqualFirmwareSkipsRouterBOOTStages(t *testing.T) {
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	sim := world.sim("router-01")
+	sim.currentFirmware = "6.49.21"
+	sim.upgradeFirmware = "6.49.21"
+
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts()); err != nil {
+		t.Fatal(err)
+	}
+
+	job, err := state.Load(cfg.StateDir, "router-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Stage != upgrade.StageComplete {
+		t.Fatalf("stage %q", job.Stage)
+	}
+	if contains(sim.runs, "/system routerboard upgrade") {
+		t.Fatal("RouterBOOT upgrade ran on equal firmware")
+	}
+	if sim.reboots != 1 {
+		t.Fatalf("reboots %d, want 1", sim.reboots)
+	}
+	if count(sim.runs, validate.SystemLogCmd) != 1 {
+		t.Fatalf("role validation count %d, want 1", count(sim.runs, validate.SystemLogCmd))
+	}
+}
+
+func TestNewerFirmwareRunsRouterBOOTThenRevalidates(t *testing.T) {
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	sim := world.sim("router-01")
+	sim.currentFirmware = "6.49.13"
+	sim.upgradeFirmware = "6.49.21"
+
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts()); err != nil {
+		t.Fatal(err)
+	}
+
+	job, err := state.Load(cfg.StateDir, "router-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != state.StatusComplete {
+		t.Fatalf("status %q", job.Status)
+	}
+	if job.Stage != upgrade.StageComplete {
+		t.Fatalf("stage %q", job.Stage)
+	}
+	if !contains(sim.runs, "/system routerboard upgrade") {
+		t.Fatal("missing /system routerboard upgrade")
+	}
+	upgradeIdx := indexOf(sim.runs, "/system routerboard upgrade")
+	rebootAfter := 0
+	for i, cmd := range sim.runs {
+		if i > upgradeIdx && cmd == "/system reboot" {
+			rebootAfter++
+		}
+	}
+	if rebootAfter != 1 {
+		t.Fatalf("reboots after RouterBOOT update %d, want 1", rebootAfter)
+	}
+	if sim.reboots != 2 {
+		t.Fatalf("reboots %d, want 2 (packages then RouterBOOT)", sim.reboots)
+	}
+	if count(sim.runs, validate.SystemLogCmd) != 2 {
+		t.Fatalf("role validation count %d, want 2 (before and after RouterBOOT)", count(sim.runs, validate.SystemLogCmd))
+	}
+	if sim.currentFirmware != sim.upgradeFirmware {
+		t.Fatalf("firmware after RouterBOOT %s / %s", sim.currentFirmware, sim.upgradeFirmware)
+	}
+}
+
 func TestValidateRoleUsesProfileTimeoutNotReconnectBudget(t *testing.T) {
 	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
 	cfg.Reconnect.Timeout = 3 * time.Minute
@@ -209,6 +281,9 @@ func TestResumeFromStage(t *testing.T) {
 		{stage: upgrade.StageReboot, wantUpload: false, wantReboot: true},
 		{stage: upgrade.StageWaitForReconnect, wantUpload: false, wantReboot: false},
 		{stage: upgrade.StageValidateRole, wantUpload: false, wantReboot: false},
+		{stage: upgrade.StageRouterbootUpdate, wantUpload: false, wantReboot: false},
+		{stage: upgrade.StageRebootRouterboot, wantUpload: false, wantReboot: true},
+		{stage: upgrade.StageValidateAfterRouterboot, wantUpload: false, wantReboot: false},
 		{stage: upgrade.StageComplete, wantUpload: false, wantReboot: false},
 	}
 	for _, tc := range tests {
@@ -534,6 +609,9 @@ type deviceSim struct {
 	dialErr            error
 	reconnectFailsLeft int
 	reconnectAttempts  int
+	currentFirmware    string
+	upgradeFirmware    string
+	routerbootPending  bool
 }
 
 func (s *deviceSim) Run(_ context.Context, command string) (string, error) {
@@ -544,7 +622,10 @@ func (s *deviceSim) Run(_ context.Context, command string) (string, error) {
 	case command == "/system package print":
 		return packagePrint(s.version, s.packages), nil
 	case command == "/system routerboard print":
-		return routerboardPrint(), nil
+		return s.routerboardPrint(), nil
+	case command == "/system routerboard upgrade":
+		s.routerbootPending = true
+		return "", nil
 	case command == "/system identity print":
 		return "  name: " + s.name + "\n", nil
 	case command == "/export hide-sensitive":
@@ -564,6 +645,10 @@ func (s *deviceSim) Run(_ context.Context, command string) (string, error) {
 		s.rebooted = true
 		if s.applyOnReboot {
 			s.version = s.target
+		}
+		if s.routerbootPending {
+			s.currentFirmware = s.upgradeFirmware
+			s.routerbootPending = false
 		}
 		return "", errors.New("connection reset by peer")
 	case command == validate.SystemLogCmd:
@@ -667,11 +752,13 @@ func setup(t *testing.T, devices ...inventory.Device) (*config.Config, *fakeWorl
 			addr = fmt.Sprintf("192.0.2.%d", i+1)
 		}
 		world.sims[addr] = &deviceSim{
-			name:          d.Name,
-			version:       current,
-			target:        target,
-			packages:      []string{"routeros", "wireless"},
-			applyOnReboot: true,
+			name:            d.Name,
+			version:         current,
+			target:          target,
+			packages:        []string{"routeros", "wireless"},
+			applyOnReboot:   true,
+			currentFirmware: "6.49.18",
+			upgradeFirmware: "6.49.18",
 		}
 	}
 	return cfg, world
@@ -862,11 +949,19 @@ func packagePrint(version string, pkgs []string) string {
 	return b.String()
 }
 
-func routerboardPrint() string {
-	return `        board-name: hAP ac^2
-  current-firmware: 6.49.13
-  upgrade-firmware: 6.49.18
-`
+func (s *deviceSim) routerboardPrint() string {
+	current := s.currentFirmware
+	if current == "" {
+		current = "6.49.18"
+	}
+	upgrade := s.upgradeFirmware
+	if upgrade == "" {
+		upgrade = current
+	}
+	return fmt.Sprintf(`        board-name: hAP ac^2
+  current-firmware: %s
+  upgrade-firmware: %s
+`, current, upgrade)
 }
 
 func backupNameFromSave(command string) (string, bool) {
@@ -883,12 +978,26 @@ func backupNameFromSave(command string) (string, bool) {
 }
 
 func contains(cmds []string, want string) bool {
-	for _, c := range cmds {
+	return indexOf(cmds, want) >= 0
+}
+
+func indexOf(cmds []string, want string) int {
+	for i, c := range cmds {
 		if c == want {
-			return true
+			return i
 		}
 	}
-	return false
+	return -1
+}
+
+func count(cmds []string, want string) int {
+	n := 0
+	for _, c := range cmds {
+		if c == want {
+			n++
+		}
+	}
+	return n
 }
 
 func containsPrefix(cmds []string, prefix string) bool {
@@ -910,6 +1019,9 @@ func stageIndex(stage string) int {
 		upgrade.StageReboot,
 		upgrade.StageWaitForReconnect,
 		upgrade.StageValidateRole,
+		upgrade.StageRouterbootUpdate,
+		upgrade.StageRebootRouterboot,
+		upgrade.StageValidateAfterRouterboot,
 		upgrade.StageComplete,
 	} {
 		if s == stage {

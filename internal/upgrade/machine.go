@@ -16,22 +16,26 @@ import (
 	"github.com/taihen/rosup/internal/inventory"
 	"github.com/taihen/rosup/internal/preflight"
 	"github.com/taihen/rosup/internal/release"
+	"github.com/taihen/rosup/internal/routerboot"
 	"github.com/taihen/rosup/internal/state"
 	"github.com/taihen/rosup/internal/transport"
 	"github.com/taihen/rosup/internal/validate"
 )
 
 const (
-	StageDiscover         = "DISCOVER"
-	StagePreflight        = "PREFLIGHT"
-	StageExportText       = "EXPORT_TEXT"
-	StageSaveBinaryBackup = "SAVE_BINARY_BACKUP"
-	StagePackages         = "STAGE_PACKAGES"
-	StageReboot           = "REBOOT"
-	StageWaitForReconnect = "WAIT_FOR_RECONNECT"
-	StageValidateRole     = "VALIDATE_ROLE"
-	StageComplete         = "COMPLETE"
-	cmdReboot             = "/system reboot"
+	StageDiscover                = "DISCOVER"
+	StagePreflight               = "PREFLIGHT"
+	StageExportText              = "EXPORT_TEXT"
+	StageSaveBinaryBackup        = "SAVE_BINARY_BACKUP"
+	StagePackages                = "STAGE_PACKAGES"
+	StageReboot                  = "REBOOT"
+	StageWaitForReconnect        = "WAIT_FOR_RECONNECT"
+	StageValidateRole            = "VALIDATE_ROLE"
+	StageRouterbootUpdate        = "ROUTERBOOT_UPDATE"
+	StageRebootRouterboot        = "REBOOT_ROUTERBOOT"
+	StageValidateAfterRouterboot = "VALIDATE_ROLE_AFTER_ROUTERBOOT"
+	StageComplete                = "COMPLETE"
+	cmdReboot                    = "/system reboot"
 )
 
 var stages = []string{
@@ -43,6 +47,9 @@ var stages = []string{
 	StageReboot,
 	StageWaitForReconnect,
 	StageValidateRole,
+	StageRouterbootUpdate,
+	StageRebootRouterboot,
+	StageValidateAfterRouterboot,
 	StageComplete,
 }
 
@@ -145,6 +152,11 @@ func runDevice(ctx context.Context, cfg *config.Config, version string, d invent
 	start := startIndex(job.Stage)
 	for i := start; i < len(stages); i++ {
 		st := stages[i]
+		if skip, err := r.skipRouterbootStage(st); err != nil {
+			return markFailed(cfg.StateDir, job, err)
+		} else if skip {
+			continue
+		}
 		if err := state.Advance(cfg.StateDir, job, st); err != nil {
 			return err
 		}
@@ -169,6 +181,7 @@ type deviceRun struct {
 	client   transport.Client
 	backedUp bool
 	export   string
+	skipRB   *bool
 }
 
 func (r *deviceRun) step(st string) error {
@@ -187,6 +200,12 @@ func (r *deviceRun) step(st string) error {
 		return r.waitReconnect()
 	case StageValidateRole:
 		return r.validateRole()
+	case StageRouterbootUpdate:
+		return r.routerbootUpdate()
+	case StageRebootRouterboot:
+		return r.rebootRouterboot()
+	case StageValidateAfterRouterboot:
+		return r.validateAfterRouterboot()
 	case StageComplete:
 		return r.complete()
 	default:
@@ -294,18 +313,81 @@ func (r *deviceRun) waitReconnect() error {
 }
 
 func (r *deviceRun) validateRole() error {
+	return r.checkRole(false)
+}
+
+func (r *deviceRun) skipRouterbootStage(st string) (bool, error) {
+	switch st {
+	case StageRouterbootUpdate:
+		newer, err := r.firmwareNewer()
+		if err != nil {
+			return false, err
+		}
+		skip := !newer
+		r.skipRB = &skip
+		return skip, nil
+	case StageRebootRouterboot, StageValidateAfterRouterboot:
+		return r.skipRB != nil && *r.skipRB, nil
+	default:
+		return false, nil
+	}
+}
+
+func (r *deviceRun) firmwareNewer() (bool, error) {
+	if err := r.ensureClient(); err != nil {
+		return false, err
+	}
+	out, err := r.client.Run(r.ctx, "/system routerboard print")
+	if err != nil {
+		return false, fmt.Errorf("upgrade: %s: /system routerboard print: %w", r.d.Name, err)
+	}
+	current, upgrade := routerboot.ParseFirmware(out)
+	return routerboot.Newer(upgrade, current), nil
+}
+
+func (r *deviceRun) routerbootUpdate() error {
+	if err := r.ensureClient(); err != nil {
+		return err
+	}
+	if _, err := r.client.Run(r.ctx, routerboot.CmdUpgrade); err != nil {
+		return fmt.Errorf("upgrade: %s: %s: %w", r.d.Name, routerboot.CmdUpgrade, err)
+	}
+	return nil
+}
+
+func (r *deviceRun) rebootRouterboot() error {
+	if err := r.ensureClient(); err != nil {
+		return err
+	}
+	_, err := r.client.Run(r.ctx, cmdReboot)
+	r.closeClient()
+	if err != nil && r.ctx.Err() != nil {
+		return fmt.Errorf("upgrade: %s: %s: %w", r.d.Name, cmdReboot, r.ctx.Err())
+	}
+	return nil
+}
+
+func (r *deviceRun) validateAfterRouterboot() error {
+	if err := waitForReconnect(r.ctx, r.cfg, r.d, r.opts); err != nil {
+		return err
+	}
+	return r.checkRole(true)
+}
+
+func (r *deviceRun) checkRole(upgradeFirmware bool) error {
 	profile := r.d.ValidationProfile
 	if profile == "" {
 		profile = r.d.Role
 	}
 	return validate.Check(r.ctx, validate.Request{
-		Config:    r.cfg,
-		Device:    r.d,
-		Target:    r.version,
-		Dial:      r.opts.Dial,
-		Clock:     r.opts.Clock,
-		Profile:   profile,
-		RoleCheck: validate.RoleChecks[profile],
+		Config:          r.cfg,
+		Device:          r.d,
+		Target:          r.version,
+		Dial:            r.opts.Dial,
+		Clock:           r.opts.Clock,
+		Profile:         profile,
+		UpgradeFirmware: upgradeFirmware,
+		RoleCheck:       validate.RoleChecks[profile],
 	})
 }
 
