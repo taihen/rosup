@@ -1,6 +1,6 @@
 # rosup
 
-A portable Go CLI for MikroTik RouterOS 6 Long-term upgrades. It syncs packages, upgrades one device at a time, validates by role, and writes text audit history.
+A portable Go CLI for MikroTik RouterOS 6 Long-term only. It syncs packages, upgrades one device at a time, validates by role, and writes text audit history.
 
 RouterOS 7 and other channels are not supported.
 
