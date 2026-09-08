@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	"github.com/taihen/rosup/internal/cli"
 	"github.com/taihen/rosup/internal/config"
 )
 
@@ -45,7 +46,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(
 		newVersionCmd(),
 		stubCmd("discover", "Read-only facts from a device"),
-		newReleaseCmd(),
+		cli.NewReleaseCmd(),
 		stubCmd("plan", "Show what an upgrade would do"),
 		stubCmd("upgrade", "Run the upgrade for a group"),
 		stubCmd("verify", "Re-check a device against its role profile"),
@@ -91,22 +92,6 @@ func newVersionCmd() *cobra.Command {
 			return err
 		},
 	}
-}
-
-func newReleaseCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "release",
-		Short: "Manage synced RouterOS releases",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return errors.New("a release subcommand is required")
-		},
-	}
-	cmd.AddCommand(
-		stubCmd("sync", "Download Long-term packages"),
-		stubCmd("list", "List locally synced release versions"),
-	)
-	return cmd
 }
 
 func newBackupCmd() *cobra.Command {
