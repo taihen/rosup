@@ -65,7 +65,6 @@ func TestUnknownCommandExitsNonZero(t *testing.T) {
 
 func TestStubCommandsNotImplemented(t *testing.T) {
 	commands := [][]string{
-		{"verify"},
 		{"rollback"},
 		{"backup", "restore"},
 	}
@@ -207,6 +206,66 @@ func TestPlanMissingManifest(t *testing.T) {
 		t.Fatalf("should load the local manifest, got %v", err)
 	}
 	if !strings.Contains(err.Error(), "6.49.21") && !strings.Contains(err.Error(), "manifest") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestVerifyRequiresDevice(t *testing.T) {
+	_, _, err := execute(t, "verify")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "not implemented") {
+		t.Fatalf("verify should require a device, got %v", err)
+	}
+}
+
+func TestVerifyHeldLock(t *testing.T) {
+	configPath, _ := writeCLIConfig(t)
+	dir := filepath.Dir(configPath)
+	lockPath := filepath.Join(dir, "state", "rosup.lock")
+	unlock, err := lockfile.Acquire(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = unlock() })
+
+	_, _, err = execute(t, "--config", configPath, "verify", "router-01")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, lockfile.ErrLocked) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestVerifyUnknownDevice(t *testing.T) {
+	configPath, _ := writeCLIConfig(t)
+	dir := filepath.Dir(configPath)
+	inv := filepath.Join(dir, "ops", "inventory", "devices.yaml")
+	if err := os.MkdirAll(filepath.Dir(inv), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := `devices:
+  - name: other
+    address: 192.0.2.9
+    role: access
+    group: edge
+    order: 1
+    validation_profile: access
+`
+	if err := os.WriteFile(inv, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := execute(t, "--config", configPath, "verify", "router-01")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "not implemented") {
+		t.Fatalf("should look up inventory, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "router-01") {
 		t.Fatalf("got %v", err)
 	}
 }

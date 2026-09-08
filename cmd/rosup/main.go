@@ -49,7 +49,7 @@ func newRootCmd() *cobra.Command {
 		cli.NewReleaseCmd(),
 		cli.NewPlanCmd(),
 		cli.NewUpgradeCmd(),
-		stubCmd("verify", "Re-check a device against its role profile"),
+		cli.NewVerifyCmd(),
 		stubCmd("rollback", "Downgrade packages to a complete local release"),
 		newBackupCmd(),
 	)
