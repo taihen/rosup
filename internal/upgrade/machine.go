@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/taihen/rosup/internal/auditgit"
@@ -19,6 +18,7 @@ import (
 	"github.com/taihen/rosup/internal/release"
 	"github.com/taihen/rosup/internal/state"
 	"github.com/taihen/rosup/internal/transport"
+	"github.com/taihen/rosup/internal/validate"
 )
 
 const (
@@ -257,6 +257,9 @@ func (r *deviceRun) reboot() error {
 	if err := r.ensureClient(); err != nil {
 		return err
 	}
+	if err := r.snapshotBaseline(); err != nil {
+		return err
+	}
 	_, err := r.client.Run(r.ctx, cmdReboot)
 	r.closeClient()
 	if err != nil && r.ctx.Err() != nil {
@@ -265,42 +268,37 @@ func (r *deviceRun) reboot() error {
 	return nil
 }
 
+func (r *deviceRun) snapshotBaseline() error {
+	facts, err := factsFrom(r.job)
+	if err != nil {
+		return fmt.Errorf("upgrade: %s: %w", r.d.Name, err)
+	}
+	dir, err := validate.JobDir(r.cfg, r.d.Name, r.version)
+	if err != nil {
+		return fmt.Errorf("upgrade: %s: %w", r.d.Name, err)
+	}
+	return validate.WriteBaseline(dir, validate.FromFacts(r.d.Name, facts, true, nil))
+}
+
 func (r *deviceRun) waitReconnect() error {
 	r.closeClient()
 	return waitForReconnect(r.ctx, r.cfg, r.d, r.opts)
 }
 
 func (r *deviceRun) validateRole() error {
-	facts, err := discover.Probe(r.ctx, r.cfg, r.d, r.opts.Dial)
-	if err != nil {
-		return err
+	profile := r.d.ValidationProfile
+	if profile == "" {
+		profile = r.d.Role
 	}
-	if facts.Version != r.version {
-		return fmt.Errorf("upgrade: %s: version %s, want %s", r.d.Name, facts.Version, r.version)
-	}
-	old, err := factsFrom(r.job)
-	if err != nil {
-		return fmt.Errorf("upgrade: %s: %w", r.d.Name, err)
-	}
-	have := make(map[string]struct{}, len(facts.Packages))
-	for _, p := range facts.Packages {
-		have[p.Name] = struct{}{}
-	}
-	var missing []string
-	for _, p := range old.Packages {
-		if _, ok := have[p.Name]; !ok {
-			missing = append(missing, p.Name)
-		}
-	}
-	if len(missing) > 0 {
-		return fmt.Errorf("upgrade: %s: missing packages after upgrade: %s", r.d.Name, strings.Join(missing, ", "))
-	}
-	raw, err := json.Marshal(facts)
-	if err != nil {
-		return fmt.Errorf("upgrade: %s: marshal facts: %w", r.d.Name, err)
-	}
-	r.job.Facts = raw
-	return state.Save(r.cfg.StateDir, r.job)
+	return validate.Check(r.ctx, validate.Request{
+		Config:    r.cfg,
+		Device:    r.d,
+		Target:    r.version,
+		Dial:      r.opts.Dial,
+		Clock:     r.opts.Clock,
+		Profile:   profile,
+		RoleCheck: validate.RoleChecks[profile],
+	})
 }
 
 func (r *deviceRun) complete() error {

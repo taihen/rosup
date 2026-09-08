@@ -19,6 +19,7 @@ import (
 	"github.com/taihen/rosup/internal/state"
 	"github.com/taihen/rosup/internal/transport"
 	"github.com/taihen/rosup/internal/upgrade"
+	"github.com/taihen/rosup/internal/validate"
 )
 
 const (
@@ -89,6 +90,51 @@ func TestHappyPathReachesCompleteWithoutRouterBOOT(t *testing.T) {
 	}
 	if !contains(sim.runs, "/system resource print") {
 		t.Fatal("missing discover")
+	}
+	if !contains(sim.runs, validate.SystemLogCmd) {
+		t.Fatal("missing system log check")
+	}
+
+	dir, err := validate.JobDir(cfg, "router-01", target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := validate.ReadBaseline(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if baseline.Version != current {
+		t.Fatalf("baseline version %q, want pre-reboot %q", baseline.Version, current)
+	}
+	if !baseline.SSHUp {
+		t.Fatal("baseline ssh_up")
+	}
+	if baseline.CurrentFirmware == "" || baseline.UpgradeFirmware == "" {
+		t.Fatalf("baseline firmware %q / %q", baseline.CurrentFirmware, baseline.UpgradeFirmware)
+	}
+	if string(baseline.RoleFacts) != "{}" {
+		t.Fatalf("role_facts slot %s", baseline.RoleFacts)
+	}
+	if world.clock.now.Sub(world.clock.start) != 5*time.Minute {
+		t.Fatalf("convergence wait %s, want profile 5m not reconnect 3m", world.clock.now.Sub(world.clock.start))
+	}
+}
+
+func TestValidateRoleUsesProfileTimeoutNotReconnectBudget(t *testing.T) {
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	cfg.Reconnect.Timeout = 3 * time.Minute
+	writeProfile(t, cfg, "ospf", "convergence_timeout: 10m\n")
+
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts()); err != nil {
+		t.Fatal(err)
+	}
+	if world.clock.now.Sub(world.clock.start) != 10*time.Minute {
+		t.Fatalf("elapsed %s, want 10m profile timeout", world.clock.now.Sub(world.clock.start))
+	}
+	for _, d := range world.clock.sleeps {
+		if d == cfg.Reconnect.Timeout {
+			t.Fatal("validation slept the reconnect budget")
+		}
 	}
 }
 
@@ -174,6 +220,9 @@ func TestResumeFromStage(t *testing.T) {
 			}
 			if err := state.Save(cfg.StateDir, job); err != nil {
 				t.Fatal(err)
+			}
+			if stageIndex(tc.stage) >= stageIndex(upgrade.StageWaitForReconnect) {
+				writeJobBaseline(t, cfg, "router-01", sampleFacts(current))
 			}
 
 			if err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts()); err != nil {
@@ -285,6 +334,7 @@ func TestReconnectTimeoutMarksFailedWithoutDowngrade(t *testing.T) {
 	if err := state.Save(cfg.StateDir, job); err != nil {
 		t.Fatal(err)
 	}
+	writeJobBaseline(t, cfg, "router-01", sampleFacts(current))
 	world.clock.jump = cfg.Reconnect.Timeout
 
 	err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts())
@@ -386,14 +436,16 @@ func TestValidateRoleRequiresTargetVersionAndPackages(t *testing.T) {
 }
 
 type fakeClock struct {
-	start time.Time
-	now   time.Time
-	jump  time.Duration
+	start  time.Time
+	now    time.Time
+	jump   time.Duration
+	sleeps []time.Duration
 }
 
 func (c *fakeClock) Now() time.Time { return c.now }
 
 func (c *fakeClock) Sleep(d time.Duration) {
+	c.sleeps = append(c.sleeps, d)
 	if c.jump > 0 {
 		c.now = c.now.Add(c.jump)
 		return
@@ -504,6 +556,8 @@ func (s *deviceSim) Run(_ context.Context, command string) (string, error) {
 			s.version = s.target
 		}
 		return "", errors.New("connection reset by peer")
+	case command == validate.SystemLogCmd:
+		return systemLogPrint(s.version, s.packages), nil
 	default:
 		return "", fmt.Errorf("unexpected command %q", command)
 	}
@@ -559,6 +613,7 @@ func setup(t *testing.T, devices ...inventory.Device) (*config.Config, *fakeWorl
 		t.Fatal(err)
 	}
 	cfg := &config.Config{
+		DataDir:             filepath.Join(root, "data"),
 		StateDir:            filepath.Join(root, "state"),
 		PackageDir:          filepath.Join(root, "packages"),
 		BackupDir:           filepath.Join(root, "backups"),
@@ -576,6 +631,7 @@ func setup(t *testing.T, devices ...inventory.Device) (*config.Config, *fakeWorl
 			Attempts: 3,
 		},
 	}
+	writeDefaultProfiles(t, cfg)
 	writeRelease(t, cfg, target, []release.File{
 		npk("routeros", "arm"),
 		npk("wireless", "arm"),
@@ -685,6 +741,51 @@ func device(name, group string, order int, deps []string) inventory.Device {
 		ValidationProfile: role,
 		DependsOn:         deps,
 	}
+}
+
+func writeDefaultProfiles(t *testing.T, cfg *config.Config) {
+	t.Helper()
+	profiles := map[string]string{
+		"ospf":   "convergence_timeout: 5m\n",
+		"pppoe":  "convergence_timeout: 10m\n",
+		"radio":  "convergence_timeout: 5m\n",
+		"switch": "convergence_timeout: 2m\n",
+		"access": "convergence_timeout: 2m\n",
+	}
+	for role, body := range profiles {
+		writeProfile(t, cfg, role, body)
+	}
+}
+
+func writeProfile(t *testing.T, cfg *config.Config, role, body string) {
+	t.Helper()
+	path := filepath.Join(cfg.Ops.Path, "inventory", "profiles", role+".yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeJobBaseline(t *testing.T, cfg *config.Config, device string, facts discover.Facts) {
+	t.Helper()
+	dir, err := validate.JobDir(cfg, device, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validate.WriteBaseline(dir, validate.FromFacts(device, facts, true, nil)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func systemLogPrint(version string, pkgs []string) string {
+	var b strings.Builder
+	b.WriteString("  jan/02/1970 00:06:31 system,info,account user rosup logged in from 192.0.2.1 via ssh\n")
+	for _, p := range pkgs {
+		fmt.Fprintf(&b, "  jan/02/1970 00:07:54 system,info installed %s-%s\n", p, version)
+	}
+	return b.String()
 }
 
 func inventoryYAML(devices []inventory.Device) string {
