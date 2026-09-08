@@ -43,3 +43,36 @@ func TestRedactWPAPreSharedKey(t *testing.T) {
 		t.Fatalf("leaked: %s", out)
 	}
 }
+
+func TestRedactROS6PrintSecrets(t *testing.T) {
+	cases := []struct {
+		key, value string
+	}{
+		{"tcp-md5-key", "md5-secret"},
+		{"authentication-key", "auth-secret"},
+		{"management-protection-key", "mgmt-secret"},
+		{"sta-private-key", "sta-secret"},
+		{"static-sta-private-key", "static-sta-secret"},
+		{"static-key-0", "sk0-secret"},
+		{"static-key-1", "sk1-secret"},
+		{"static-key-2", "sk2-secret"},
+		{"static-key-3", "sk3-secret"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.key, func(t *testing.T) {
+			in := tc.key + "=" + tc.value
+			out := redact.String(in)
+			if strings.Contains(out, tc.value) {
+				t.Fatalf("leaked %q: %s", tc.value, out)
+			}
+		})
+	}
+}
+
+func TestRedactLeavesAuthenticationKeyID(t *testing.T) {
+	in := "authentication-key-id=1"
+	out := redact.String(in)
+	if !strings.Contains(out, "authentication-key-id=1") {
+		t.Fatalf("authentication-key-id=1 was redacted: %s", out)
+	}
+}

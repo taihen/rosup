@@ -16,6 +16,8 @@ const (
 	StatusFailed     = "failed"
 )
 
+var ErrJobComplete = errors.New("state: job already complete")
+
 type DeviceJob struct {
 	Device    string    `json:"device"`
 	Release   string    `json:"release"`
@@ -68,6 +70,9 @@ func Load(stateDir, device string) (*DeviceJob, error) {
 	if err := json.Unmarshal(data, &job); err != nil {
 		return nil, fmt.Errorf("state: parse %s: %w", path, err)
 	}
+	if job.Device != device {
+		return nil, fmt.Errorf("state: device identity %q does not match %q", job.Device, device)
+	}
 	return &job, nil
 }
 
@@ -79,6 +84,16 @@ func Save(stateDir string, job *DeviceJob) error {
 	if err != nil {
 		return err
 	}
+
+	existing, err := Load(stateDir, job.Device)
+	if err == nil {
+		if existing.Status == StatusComplete && job.Status != StatusComplete {
+			return ErrJobComplete
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
 	if err := EnsureSecureDir(stateDir); err != nil {
 		return err
 	}

@@ -136,6 +136,109 @@ func TestMarkStartedSetsInProgress(t *testing.T) {
 	}
 }
 
+func TestMarkStartedDoesNotOverwriteCompleteOnDisk(t *testing.T) {
+	dir := t.TempDir()
+	complete := sampleJob(state.StatusComplete)
+	complete.Stage = "COMPLETE"
+	if err := state.Save(dir, complete); err != nil {
+		t.Fatal(err)
+	}
+
+	pending := &state.DeviceJob{Device: "golem", Status: state.StatusPending}
+	err := state.MarkStarted(dir, pending)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, state.ErrJobComplete) {
+		t.Fatalf("want ErrJobComplete, got %v", err)
+	}
+
+	got, err := state.Load(dir, "golem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != state.StatusComplete {
+		t.Fatalf("on-disk status %q", got.Status)
+	}
+	if got.Stage != "COMPLETE" {
+		t.Fatalf("stage %q", got.Stage)
+	}
+}
+
+func TestSaveRejectsCompleteToInProgress(t *testing.T) {
+	dir := t.TempDir()
+	complete := sampleJob(state.StatusComplete)
+	if err := state.Save(dir, complete); err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(dir, "golem.json")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	next := sampleJob(state.StatusInProgress)
+	err = state.Save(dir, next)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, state.ErrJobComplete) {
+		t.Fatalf("want ErrJobComplete, got %v", err)
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("disk changed:\nbefore %s\nafter %s", before, after)
+	}
+}
+
+func TestSaveAllowsTransitionToComplete(t *testing.T) {
+	dir := t.TempDir()
+	job := sampleJob(state.StatusInProgress)
+	if err := state.Save(dir, job); err != nil {
+		t.Fatal(err)
+	}
+
+	job.Status = state.StatusComplete
+	job.Stage = "COMPLETE"
+	if err := state.Save(dir, job); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := state.Load(dir, job.Device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != state.StatusComplete {
+		t.Fatalf("on-disk status %q", got.Status)
+	}
+	if got.Stage != "COMPLETE" {
+		t.Fatalf("stage %q", got.Stage)
+	}
+}
+
+func TestLoadRejectsDeviceIdentityMismatch(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "golem.json")
+	body := []byte(`{"device":"boa","release":"6.49.21","status":"pending"}`)
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := state.Load(dir, "golem")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	if _, statErr := os.Stat(filepath.Join(dir, "boa.json")); statErr == nil {
+		t.Fatal("boa.json was written")
+	}
+}
+
 func TestSaveRejectsUnsafeDeviceNames(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "state")
