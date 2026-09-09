@@ -13,7 +13,7 @@ jobs:
       CGO_ENABLED: "0"
     steps:
       - uses: actions/checkout@v7
-      - uses: jdx/mise-action@v3
+      - uses: jdx/mise-action@v4
         with:
           install: true
       - name: Verify toolchain
