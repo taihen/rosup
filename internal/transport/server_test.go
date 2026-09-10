@@ -22,12 +22,13 @@ import (
 )
 
 type testSSHServer struct {
-	mu      sync.Mutex
-	hostKey ssh.Signer
-	userKey ssh.PublicKey
-	ln      net.Listener
-	host    string
-	port    int
+	mu           sync.Mutex
+	hostKey      ssh.Signer
+	userKey      ssh.PublicKey
+	ln           net.Listener
+	host         string
+	port         int
+	keyExchanges []string
 }
 
 func generateSigner(t *testing.T) ssh.Signer {
@@ -69,6 +70,11 @@ func writePrivateKey(t *testing.T, path string) ssh.PublicKey {
 
 func startTestSSHServer(t *testing.T, userKey ssh.PublicKey, hostKey ssh.Signer) *testSSHServer {
 	t.Helper()
+	return startTestSSHServerKEX(t, userKey, hostKey, nil)
+}
+
+func startTestSSHServerKEX(t *testing.T, userKey ssh.PublicKey, hostKey ssh.Signer, keyExchanges []string) *testSSHServer {
+	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -82,11 +88,12 @@ func startTestSSHServer(t *testing.T, userKey ssh.PublicKey, hostKey ssh.Signer)
 		t.Fatal(err)
 	}
 	srv := &testSSHServer{
-		hostKey: hostKey,
-		userKey: userKey,
-		ln:      ln,
-		host:    host,
-		port:    port,
+		hostKey:      hostKey,
+		userKey:      userKey,
+		ln:           ln,
+		host:         host,
+		port:         port,
+		keyExchanges: keyExchanges,
 	}
 	go srv.serve()
 	t.Cleanup(func() { _ = ln.Close() })
@@ -115,9 +122,11 @@ func (s *testSSHServer) handle(nConn net.Conn) {
 	s.mu.Lock()
 	hostKey := s.hostKey
 	userKey := s.userKey
+	keyExchanges := s.keyExchanges
 	s.mu.Unlock()
 
 	cfg := &ssh.ServerConfig{
+		Config: ssh.Config{KeyExchanges: keyExchanges},
 		PublicKeyCallback: func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
 			if conn.User() != "rosup" {
 				return nil, fmt.Errorf("bad user %q", conn.User())

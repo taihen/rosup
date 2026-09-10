@@ -70,6 +70,12 @@ func Dial(ctx context.Context, cfg config.SSHConfig, address string, port int) (
 
 	pin := &hostKeyPin{path: cfg.KnownHostsPath, tofu: cfg.TOFU}
 	sshCfg := &ssh.ClientConfig{
+		Config: ssh.Config{
+			// RouterOS 6 with strong-crypto offers only
+			// diffie-hellman-group-exchange-sha256. x/crypto supports it
+			// but does not include it in the default client list.
+			KeyExchanges: ros6KeyExchanges(),
+		},
 		User:            cfg.Username,
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
 		HostKeyCallback: pin.callback,
@@ -88,6 +94,14 @@ func Dial(ctx context.Context, cfg config.SSHConfig, address string, port int) (
 	}
 
 	return &sshClient{conn: ssh.NewClient(conn, chans, reqs)}, nil
+}
+
+func ros6KeyExchanges() []string {
+	kex := ssh.SupportedAlgorithms().KeyExchanges
+	out := make([]string, 0, len(kex)+1)
+	out = append(out, kex...)
+	out = append(out, ssh.InsecureKeyExchangeDH14SHA1)
+	return out
 }
 
 func (c *sshClient) Run(ctx context.Context, command string) (string, error) {
