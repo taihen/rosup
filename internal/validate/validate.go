@@ -25,6 +25,7 @@ const (
 	cmdRouterboard = "/system routerboard print"
 	cmdIdentity    = "/system identity print"
 	baselineFile   = "baseline.json"
+	jobsDirName    = "jobs"
 
 	CmdOSPFNeighbor = "/routing ospf neighbor print"
 	CmdIPRoute      = "/ip route print"
@@ -111,12 +112,73 @@ func JobDir(cfg *config.Config, device, release string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("validate: resolve data_dir: %w", err)
 	}
-	path := filepath.Join(base, device, release)
+	if err := migrateLegacyDeviceJobs(base, device); err != nil {
+		return "", err
+	}
+	path := filepath.Join(base, jobsDirName, device, release)
 	rel, err := filepath.Rel(base, path)
 	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
 		return "", fmt.Errorf("validate: invalid job dir %q", path)
 	}
 	return path, nil
+}
+
+var reservedDataDirNames = map[string]struct{}{
+	"backups":   {},
+	"ops":       {},
+	"packages":  {},
+	"ssh":       {},
+	"state":     {},
+	jobsDirName: {},
+}
+
+func migrateLegacyDeviceJobs(base, device string) error {
+	if _, reserved := reservedDataDirNames[device]; reserved {
+		return nil
+	}
+	oldRoot := filepath.Join(base, device)
+	newRoot := filepath.Join(base, jobsDirName, device)
+	st, err := os.Lstat(oldRoot)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("validate: stat legacy job dir %s: %w", oldRoot, err)
+	}
+	if !st.IsDir() {
+		return nil
+	}
+	if _, err := os.Lstat(newRoot); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("validate: stat %s: %w", newRoot, err)
+	}
+	if !legacyJobTree(oldRoot) {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Join(base, jobsDirName), 0o700); err != nil {
+		return fmt.Errorf("validate: mkdir %s: %w", filepath.Join(base, jobsDirName), err)
+	}
+	if err := os.Rename(oldRoot, newRoot); err != nil {
+		return fmt.Errorf("validate: migrate %s to %s: %w", oldRoot, newRoot, err)
+	}
+	return nil
+}
+
+func legacyJobTree(root string) bool {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(root, e.Name(), baselineFile)); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func WriteBaseline(jobDir string, b Baseline) error {

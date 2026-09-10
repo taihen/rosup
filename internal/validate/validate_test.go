@@ -87,8 +87,57 @@ func TestJobDirIsLocalDataDirNotAudit(t *testing.T) {
 	if strings.Contains(dir, "audit") {
 		t.Fatalf("job dir must not be git audit: %s", dir)
 	}
-	if dir != filepath.Join(cfg.DataDir, "router-01", target) {
+	if dir != filepath.Join(cfg.DataDir, "jobs", "router-01", target) {
 		t.Fatalf("job dir %q", dir)
+	}
+}
+
+func TestJobDirMigratesLegacyDeviceTree(t *testing.T) {
+	cfg := testConfig(t)
+	legacy := filepath.Join(cfg.DataDir, "boa", target)
+	if err := os.MkdirAll(legacy, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	baseline := filepath.Join(legacy, "baseline.json")
+	if err := os.WriteFile(baseline, []byte(`{"device":"boa"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	dir, err := validate.JobDir(cfg, "boa", target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(cfg.DataDir, "jobs", "boa", target)
+	if dir != want {
+		t.Fatalf("job dir %q, want %q", dir, want)
+	}
+	if _, err := os.Stat(filepath.Join(want, "baseline.json")); err != nil {
+		t.Fatalf("migrated baseline: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.DataDir, "boa")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy device dir still present: %v", err)
+	}
+}
+
+func TestJobDirDoesNotMoveOpsCheckout(t *testing.T) {
+	cfg := testConfig(t)
+	ops := filepath.Join(cfg.DataDir, "ops")
+	if err := os.MkdirAll(filepath.Join(ops, "inventory"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(ops, "inventory", "devices.yaml")
+	if err := os.WriteFile(marker, []byte("devices: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := validate.JobDir(cfg, "ops", target); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("ops checkout was moved: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.DataDir, "jobs", "ops")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("reserved name should not be migrated into jobs")
 	}
 }
 
