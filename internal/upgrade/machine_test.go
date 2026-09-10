@@ -239,6 +239,19 @@ func TestStagePackagesUploadsOnlyInstalledPackageNPKs(t *testing.T) {
 	}
 }
 
+func TestStagePackagesAcceptsRouterOSArchPackageName(t *testing.T) {
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	world.sim("router-01").packages = []string{"routeros-arm", "wireless"}
+
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts()); err != nil {
+		t.Fatal(err)
+	}
+	got := world.sim("router-01").uploadedRemotes()
+	if strings.Join(got, ",") != "routeros-arm-6.49.21.npk,wireless-6.49.21-arm.npk" {
+		t.Fatalf("uploads %v", got)
+	}
+}
+
 func TestCompleteSameReleaseSkipsSecondUpgrade(t *testing.T) {
 	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
 	if err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts()); err != nil {

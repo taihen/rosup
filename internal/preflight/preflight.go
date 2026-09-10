@@ -22,15 +22,7 @@ func Check(facts discover.Facts, man release.Manifest) error {
 		return err
 	}
 
-	byPkg := make(map[string]release.File, len(man.Files))
-	for _, f := range man.Files {
-		if f.Architecture != facts.ArchitectureName {
-			continue
-		}
-		if _, exists := byPkg[f.Package]; !exists {
-			byPkg[f.Package] = f
-		}
-	}
+	byPkg := release.IndexByInstalledName(man.Files, facts.ArchitectureName)
 
 	var stagedSize int64
 	var missing []string

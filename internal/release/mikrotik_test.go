@@ -154,6 +154,28 @@ func TestParseNPKNameLivePatterns(t *testing.T) {
 	}
 }
 
+func TestIndexByInstalledNameAliasesRouterOSArch(t *testing.T) {
+	files := []release.File{
+		{Name: "routeros-arm-6.49.21.npk", Architecture: "arm", Package: "routeros"},
+		{Name: "system-6.49.21-arm.npk", Architecture: "arm", Package: "system"},
+		{Name: "routeros-mipsbe-6.49.21.npk", Architecture: "mipsbe", Package: "routeros"},
+	}
+	arm := release.IndexByInstalledName(files, "arm")
+	if arm["routeros"].Name != "routeros-arm-6.49.21.npk" {
+		t.Fatalf("routeros %+v", arm["routeros"])
+	}
+	if arm["routeros-arm"].Name != "routeros-arm-6.49.21.npk" {
+		t.Fatalf("routeros-arm %+v", arm["routeros-arm"])
+	}
+	if _, ok := arm["routeros-mipsbe"]; ok {
+		t.Fatal("arm index must not include mipsbe alias")
+	}
+	mipsbe := release.IndexByInstalledName(files, "mipsbe")
+	if mipsbe["routeros-mipsbe"].Name != "routeros-mipsbe-6.49.21.npk" {
+		t.Fatalf("routeros-mipsbe %+v", mipsbe["routeros-mipsbe"])
+	}
+}
+
 func TestParseNewestRejectsPathLikeVersion(t *testing.T) {
 	_, err := release.ParseNewest([]byte("6./../tmp extra\n"))
 	if err == nil {
