@@ -102,13 +102,7 @@ func Failure(r *Report) error {
 }
 
 func missingPackages(facts discover.Facts, man release.Manifest) []string {
-	have := make(map[string]struct{})
-	for _, f := range man.Files {
-		if f.Architecture != facts.ArchitectureName {
-			continue
-		}
-		have[f.Package] = struct{}{}
-	}
+	have := release.IndexByInstalledName(man.Files, facts.ArchitectureName)
 	var missing []string
 	for _, p := range facts.Packages {
 		if _, ok := have[p.Name]; !ok {

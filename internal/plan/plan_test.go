@@ -113,6 +113,37 @@ func TestRunReportsReadyGroup(t *testing.T) {
 	}
 }
 
+func TestRunReportsReadyWhenDevicePrintsRouterOSArchName(t *testing.T) {
+	cases := []struct {
+		arch, device, role string
+	}{
+		{"arm", "boa", "access"},
+		{"mipsbe", "SAUZA2", "radio"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.arch, func(t *testing.T) {
+			cfg := testConfig(t)
+			writeManifest(t, cfg, manifest(
+				npk("routeros", tc.arch, 1000),
+				npk("wireless", tc.arch, 1000),
+			))
+			report, err := plan.Run(context.Background(), cfg, "6.49.21", "", fakeDiscover(
+				result(tc.device, tc.role, 0, archFacts(tc.arch, "6.49.15", "107.0MiB", "routeros-"+tc.arch, "wireless")),
+			))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := plan.Failure(report); err != nil {
+				t.Fatal(err)
+			}
+			out := format(t, report)
+			if !strings.Contains(out, "missing: none") {
+				t.Fatalf("got %q", out)
+			}
+		})
+	}
+}
+
 func TestRunMissingPackagesFailsPreflight(t *testing.T) {
 	cfg := testConfig(t)
 	writeManifest(t, cfg, manifest(
@@ -231,12 +262,16 @@ func result(name, role string, order int, facts discover.Facts) discover.Result 
 }
 
 func armFacts(version, free string, pkgs ...string) discover.Facts {
+	return archFacts("arm", version, free, pkgs...)
+}
+
+func archFacts(arch, version, free string, pkgs ...string) discover.Facts {
 	packages := make([]discover.Package, len(pkgs))
 	for i, name := range pkgs {
 		packages[i] = discover.Package{Name: name, Version: "6.49.18"}
 	}
 	return discover.Facts{
-		ArchitectureName: "arm",
+		ArchitectureName: arch,
 		BoardName:        "hAP ac^2",
 		Version:          version,
 		FreeHDDSpace:     free,
