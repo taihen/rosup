@@ -9,7 +9,30 @@ import (
 	"testing"
 
 	"github.com/taihen/rosup/internal/transport"
+	"golang.org/x/crypto/ssh"
 )
+
+func TestDialNegotiatesDHGroupExchangeSHA256(t *testing.T) {
+	cfg, userKey := testSSHConfig(t, true)
+	srv := startTestSSHServerKEX(t, userKey, generateSigner(t), []string{
+		ssh.KeyExchangeDHGEXSHA256,
+	})
+
+	ctx := context.Background()
+	client, err := transport.Dial(ctx, cfg, srv.host, srv.port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	out, err := client.Run(ctx, "/system identity print")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "/system identity print") {
+		t.Fatalf("stdout %q", out)
+	}
+}
 
 func TestRunReturnsStdout(t *testing.T) {
 	cfg, userKey := testSSHConfig(t, true)
