@@ -57,7 +57,7 @@ Bind-mount every path the config references, owned by uid `65532`. At minimum:
 
 | Config key | What to mount |
 | --- | --- |
-| `data_dir` | Working data |
+| `data_dir` | Working data; per-device baselines live in `data_dir/jobs` |
 | `state_dir` | Per-device job state |
 | `package_dir` | Synced `.npk` packages |
 | `backup_dir` | Binary backups |

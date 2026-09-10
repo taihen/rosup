@@ -91,7 +91,10 @@ func lastBaselineDir(cfg *config.Config, device string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("validate: resolve data_dir: %w", err)
 	}
-	root := filepath.Join(base, device)
+	if err := migrateLegacyDeviceJobs(base, device); err != nil {
+		return "", err
+	}
+	root := filepath.Join(base, jobsDirName, device)
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
