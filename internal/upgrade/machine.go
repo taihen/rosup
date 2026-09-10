@@ -606,15 +606,7 @@ func factsFrom(job *state.DeviceJob) (discover.Facts, error) {
 }
 
 func packagesToStage(facts discover.Facts, man release.Manifest) ([]release.File, error) {
-	byPkg := make(map[string]release.File, len(man.Files))
-	for _, f := range man.Files {
-		if f.Architecture != facts.ArchitectureName {
-			continue
-		}
-		if _, exists := byPkg[f.Package]; !exists {
-			byPkg[f.Package] = f
-		}
-	}
+	byPkg := release.IndexByInstalledName(man.Files, facts.ArchitectureName)
 	out := make([]release.File, 0, len(facts.Packages))
 	for _, p := range facts.Packages {
 		f, ok := byPkg[p.Name]

@@ -53,6 +53,39 @@ func manifest(files ...release.File) release.Manifest {
 	}
 }
 
+func TestCheckAcceptsRouterOSArchPackageName(t *testing.T) {
+	facts := armFacts("6.49.18", "4212.0KiB", "routeros-arm", "wireless")
+	man := manifest(
+		npk("routeros", "arm", 1000),
+		npk("wireless", "arm", 1000),
+	)
+	if err := preflight.Check(facts, man); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCheckMipsbeUsesRouterOSMipsbeName(t *testing.T) {
+	facts := discover.Facts{
+		ArchitectureName: "mipsbe",
+		BoardName:        "SXT 5",
+		Version:          "6.49.15",
+		FreeHDDSpace:     "107.3MiB",
+		Packages: []discover.Package{
+			{Name: "routeros-mipsbe", Version: "6.49.15"},
+			{Name: "system", Version: "6.49.15"},
+		},
+		CurrentFirmware: "6.49.15",
+		UpgradeFirmware: "6.49.15",
+	}
+	man := manifest(
+		npk("routeros", "mipsbe", 1000),
+		npk("system", "mipsbe", 1000),
+	)
+	if err := preflight.Check(facts, man); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCheckMissingWireless(t *testing.T) {
 	facts := armFacts("6.49.18", "4212.0KiB", "routeros", "wireless")
 	man := manifest(

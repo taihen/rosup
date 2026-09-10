@@ -74,6 +74,32 @@ func TestParseROS6Fixture(t *testing.T) {
 	}
 }
 
+func TestParseKeepsRouterOSArchPackageName(t *testing.T) {
+	packages := "" +
+		"Flags: X - disabled \n" +
+		" #   NAME                    VERSION                    SCHEDULED              \n" +
+		" 0   routeros-arm            6.49.21                                           \n" +
+		" 1   system                  6.49.21                                           \n"
+	facts, err := discover.Parse(
+		ros6Fixture(t, "resource-print.txt"),
+		packages,
+		ros6Fixture(t, "routerboard-print.txt"),
+		ros6Fixture(t, "identity-print.txt"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(facts.Packages) != 2 {
+		t.Fatalf("packages %#v", facts.Packages)
+	}
+	if facts.Packages[0].Name != "routeros-arm" || facts.Packages[0].Version != "6.49.21" {
+		t.Fatalf("package[0] %+v", facts.Packages[0])
+	}
+	if facts.Packages[1].Name != "system" {
+		t.Fatalf("package[1] %+v", facts.Packages[1])
+	}
+}
+
 func TestParseRejectsROS7Version(t *testing.T) {
 	resource := strings.ReplaceAll(
 		ros6Fixture(t, "resource-print.txt"),
