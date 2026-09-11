@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -19,15 +21,17 @@ const (
 var ErrJobComplete = errors.New("state: job already complete")
 
 type DeviceJob struct {
-	Device    string          `json:"device"`
-	Release   string          `json:"release"`
-	Group     string          `json:"group"`
-	Stage     string          `json:"stage"`
-	Status    string          `json:"status"` // pending|in_progress|complete|failed
-	UpdatedAt time.Time       `json:"updated_at"`
-	LastError string          `json:"last_error,omitempty"`
-	Attempt   int             `json:"attempt"`
-	Facts     json.RawMessage `json:"facts,omitempty"`
+	Device     string          `json:"device"`
+	Release    string          `json:"release"`
+	Group      string          `json:"group"`
+	Stage      string          `json:"stage"`
+	Status     string          `json:"status"` // pending|in_progress|complete|failed
+	UpdatedAt  time.Time       `json:"updated_at"`
+	LastError  string          `json:"last_error,omitempty"`
+	Attempt    int             `json:"attempt"`
+	Facts      json.RawMessage `json:"facts,omitempty"`
+	ExportPath string          `json:"export_path,omitempty"`
+	BackupPath string          `json:"backup_path,omitempty"`
 }
 
 func EnsureSecureDir(path string) error {
@@ -89,7 +93,9 @@ func Save(stateDir string, job *DeviceJob) error {
 	existing, err := Load(stateDir, job.Device)
 	if err == nil {
 		if existing.Status == StatusComplete && job.Status != StatusComplete {
-			return ErrJobComplete
+			if existing.Release == "" || job.Release == "" || existing.Release == job.Release {
+				return ErrJobComplete
+			}
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -130,6 +136,7 @@ func MarkStarted(stateDir string, job *DeviceJob) error {
 		return nil
 	}
 	job.Status = StatusInProgress
+	job.LastError = ""
 	job.UpdatedAt = time.Now().UTC()
 	return Save(stateDir, job)
 }
@@ -144,4 +151,42 @@ func Advance(stateDir string, job *DeviceJob, stage string) error {
 	job.Stage = stage
 	job.UpdatedAt = time.Now().UTC()
 	return Save(stateDir, job)
+}
+
+func List(stateDir string) ([]*DeviceJob, error) {
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("state: list %s: %w", stateDir, err)
+	}
+	out := make([]*DeviceJob, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		device := strings.TrimSuffix(e.Name(), ".json")
+		if device == "" || device != filepath.Base(device) {
+			continue
+		}
+		job, err := Load(stateDir, device)
+		if err != nil {
+			// One corrupt file must not hide the rest of the fleet.
+			out = append(out, &DeviceJob{
+				Device:    device,
+				Status:    "corrupt",
+				LastError: err.Error(),
+			})
+			continue
+		}
+		out = append(out, job)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Group != out[j].Group {
+			return out[i].Group < out[j].Group
+		}
+		return out[i].Device < out[j].Device
+	})
+	return out, nil
 }

@@ -1,6 +1,7 @@
 package routerboot
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"unicode"
@@ -9,15 +10,33 @@ import (
 const CmdUpgrade = "/system routerboard upgrade"
 
 func Newer(upgradeFirmware, currentFirmware string) bool {
-	if parseToken(upgradeFirmware) == parseToken(currentFirmware) {
-		return false
+	newer, err := Compare(upgradeFirmware, currentFirmware)
+	return err == nil && newer
+}
+
+// Compare reports whether upgradeFirmware is newer than currentFirmware.
+// Empty or unparseable values return an error instead of silently skipping.
+func Compare(upgradeFirmware, currentFirmware string) (bool, error) {
+	upToken := parseToken(upgradeFirmware)
+	curToken := parseToken(currentFirmware)
+	if upToken == "" {
+		return false, fmt.Errorf("routerboot: empty upgrade-firmware")
+	}
+	if curToken == "" {
+		return false, fmt.Errorf("routerboot: empty current-firmware")
+	}
+	if upToken == curToken {
+		return false, nil
 	}
 	upgrade, upgradeOK := parseVersion(upgradeFirmware)
 	current, currentOK := parseVersion(currentFirmware)
-	if !upgradeOK || !currentOK {
-		return false
+	if !upgradeOK {
+		return false, fmt.Errorf("routerboot: unparseable upgrade-firmware %q", upgradeFirmware)
 	}
-	return compare(upgrade, current) > 0
+	if !currentOK {
+		return false, fmt.Errorf("routerboot: unparseable current-firmware %q", currentFirmware)
+	}
+	return compare(upgrade, current) > 0, nil
 }
 
 func ParseFirmware(routerboardPrint string) (current, upgrade string) {

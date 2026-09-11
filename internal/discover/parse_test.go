@@ -21,6 +21,28 @@ func ros6Fixture(t *testing.T, name string) string {
 	return string(data)
 }
 
+func TestParseRejectsMissingIdentity(t *testing.T) {
+	_, err := discover.Parse(
+		ros6Fixture(t, "resource-print.txt"),
+		ros6Fixture(t, "package-print.txt"),
+		ros6Fixture(t, "routerboard-print.txt"),
+		"  name: \n",
+	)
+	if err == nil || !strings.Contains(err.Error(), "identity") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestMatchInventory(t *testing.T) {
+	facts := discover.Facts{Identity: "edge-1"}
+	if err := discover.MatchInventory(facts, "edge-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := discover.MatchInventory(facts, "core-1"); err == nil {
+		t.Fatal("expected mismatch")
+	}
+}
+
 func TestParseROS6Fixture(t *testing.T) {
 	facts, err := discover.Parse(
 		ros6Fixture(t, "resource-print.txt"),

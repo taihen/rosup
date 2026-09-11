@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/taihen/rosup/internal/release"
+	"github.com/taihen/rosup/internal/state"
 	"github.com/taihen/rosup/internal/upgrade"
 )
 
@@ -78,5 +79,55 @@ func TestRollbackStagesCompleteLocalReleaseAndReboots(t *testing.T) {
 	}
 	if containsPrefix(sim.runs, "/system backup load") {
 		t.Fatal("rollback must not load a binary backup")
+	}
+}
+
+func TestRollbackVerifiesVersionAfterReconnect(t *testing.T) {
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	writeRelease(t, cfg, current, []release.File{
+		npkVer("routeros", "arm", current),
+		npkVer("wireless", "arm", current),
+	})
+	sim := world.sim("router-01")
+	sim.version = target
+	sim.applyOnReboot = false
+
+	err := upgrade.Rollback(context.Background(), cfg, "router-01", current, world.opts())
+	if err == nil {
+		t.Fatal("expected version mismatch error")
+	}
+	if !strings.Contains(err.Error(), "want "+current) {
+		t.Fatalf("got %v", err)
+	}
+	job, err := state.Load(cfg.StateDir, "router-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != state.StatusFailed {
+		t.Fatalf("status %q", job.Status)
+	}
+}
+
+func TestRollbackUpdatesStateOnSuccess(t *testing.T) {
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	writeRelease(t, cfg, current, []release.File{
+		npkVer("routeros", "arm", current),
+		npkVer("wireless", "arm", current),
+	})
+	sim := world.sim("router-01")
+	sim.version = target
+
+	if err := upgrade.Rollback(context.Background(), cfg, "router-01", current, world.opts()); err != nil {
+		t.Fatal(err)
+	}
+	job, err := state.Load(cfg.StateDir, "router-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != state.StatusComplete || job.Release != current {
+		t.Fatalf("job %+v", job)
+	}
+	if sim.version != current {
+		t.Fatalf("version %q", sim.version)
 	}
 }

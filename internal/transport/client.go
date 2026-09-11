@@ -97,11 +97,9 @@ func Dial(ctx context.Context, cfg config.SSHConfig, address string, port int) (
 }
 
 func ros6KeyExchanges() []string {
-	kex := ssh.SupportedAlgorithms().KeyExchanges
-	out := make([]string, 0, len(kex)+1)
-	out = append(out, kex...)
-	out = append(out, ssh.InsecureKeyExchangeDH14SHA1)
-	return out
+	// RouterOS 6 with strong-crypto offers diffie-hellman-group-exchange-sha256,
+	// which is included in SupportedAlgorithms. Do not add insecure KEXes.
+	return ssh.SupportedAlgorithms().KeyExchanges
 }
 
 func (c *sshClient) Run(ctx context.Context, command string) (string, error) {
@@ -130,6 +128,10 @@ func (c *sshClient) Run(ctx context.Context, command string) (string, error) {
 	select {
 	case <-ctx.Done():
 		_ = session.Close()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+		}
 		return "", ctx.Err()
 	case r := <-done:
 		if r.err != nil {
@@ -162,7 +164,7 @@ func (c *sshClient) Upload(ctx context.Context, local, remote string) error {
 	}
 	defer func() { _ = out.Close() }()
 
-	if _, err := io.Copy(out, in); err != nil {
+	if _, err := copyWithContext(ctx, out, in); err != nil {
 		return fmt.Errorf("transport: sftp upload %s: %w", remote, err)
 	}
 	return nil
@@ -190,7 +192,7 @@ func (c *sshClient) Download(ctx context.Context, remote, local string) error {
 	if err := os.Chmod(local, 0o600); err != nil {
 		return fmt.Errorf("transport: chmod local %s: %w", local, err)
 	}
-	if _, err := io.Copy(out, in); err != nil {
+	if _, err := copyWithContext(ctx, out, in); err != nil {
 		return fmt.Errorf("transport: sftp download %s: %w", remote, err)
 	}
 	return nil
@@ -239,4 +241,22 @@ func (c *sshClient) sftpClient() (*sftp.Client, error) {
 	}
 	c.sftp = sc
 	return sc, nil
+}
+
+func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
+	type result struct {
+		n   int64
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		n, err := io.Copy(dst, src)
+		done <- result{n, err}
+	}()
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case r := <-done:
+		return r.n, r.err
+	}
 }

@@ -295,7 +295,7 @@ func armFacts(version, free string, pkgs ...string) discover.Facts {
 func archFacts(arch, version, free string, pkgs ...string) discover.Facts {
 	packages := make([]discover.Package, len(pkgs))
 	for i, name := range pkgs {
-		packages[i] = discover.Package{Name: name, Version: "6.49.18"}
+		packages[i] = discover.Package{Name: name, Version: version}
 	}
 	return discover.Facts{
 		ArchitectureName: arch,
