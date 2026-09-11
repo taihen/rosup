@@ -68,7 +68,7 @@ func Rollback(ctx context.Context, cfg *config.Config, name, toVersion string, o
 	if err != nil && ctx.Err() != nil {
 		return fmt.Errorf("rollback: %s: %s: %w", d.Name, cmdReboot, ctx.Err())
 	}
-	return waitForReconnect(ctx, cfg, d, opts)
+	return waitForReconnect(ctx, cfg, d, opts, nil)
 }
 
 func lookupDevice(devices []inventory.Device, name string) (inventory.Device, error) {

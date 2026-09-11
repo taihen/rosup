@@ -14,6 +14,7 @@ import (
 	"github.com/taihen/rosup/internal/config"
 	"github.com/taihen/rosup/internal/discover"
 	"github.com/taihen/rosup/internal/inventory"
+	"github.com/taihen/rosup/internal/progress"
 	"github.com/taihen/rosup/internal/state"
 	"github.com/taihen/rosup/internal/transport"
 )
@@ -63,6 +64,8 @@ type Request struct {
 	Profile         string
 	UpgradeFirmware bool
 	RoleCheck       RoleFunc
+	Progress        *progress.Printer
+	LabelSuffix     string
 }
 
 type Baseline struct {
@@ -229,19 +232,35 @@ func Check(ctx context.Context, req Request) error {
 		req.Clock = realClock{}
 	}
 
-	profileName := req.Profile
-	if profileName == "" {
-		profileName = req.Device.ValidationProfile
-	}
-	if profileName == "" {
-		profileName = req.Device.Role
-	}
+	profileName := resolveProfile(req)
 	profile, err := LoadProfile(req.Config, profileName)
 	if err != nil {
 		return err
 	}
-	req.Clock.Sleep(profile.ConvergenceTimeout)
 
+	timeout := profile.ConvergenceTimeout
+	waiting := "waiting for " + profileName + req.LabelSuffix
+	req.Progress.Start(req.Device.Name, waiting+" ("+progress.FormatDuration(timeout)+")")
+	req.Progress.Wait(req.Clock.Sleep, timeout, func(left time.Duration) {
+		req.Progress.Update(waiting + " (" + progress.FormatLeft(left, timeout) + ")")
+	})
+	req.Progress.OK()
+	return req.Progress.Track(req.Device.Name, "checking "+profileName+req.LabelSuffix, func() error {
+		return checkAfterWait(ctx, req, profileName, profile)
+	})
+}
+
+func resolveProfile(req Request) string {
+	if req.Profile != "" {
+		return req.Profile
+	}
+	if req.Device.ValidationProfile != "" {
+		return req.Device.ValidationProfile
+	}
+	return req.Device.Role
+}
+
+func checkAfterWait(ctx context.Context, req Request, profileName string, profile Profile) error {
 	port := req.Device.Port
 	if port == 0 {
 		port = req.Config.SSH.DefaultPort
@@ -289,7 +308,7 @@ func Check(ctx context.Context, req Request) error {
 		fn = RoleChecks[profileName]
 	}
 	if fn != nil {
-		return fn(withRoleMeta(ctx, req.Clock, profile), client, baseline, facts)
+		return fn(withRoleMeta(ctx, req.Clock, profile, req.Progress), client, baseline, facts)
 	}
 	return nil
 }

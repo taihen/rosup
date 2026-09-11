@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/taihen/rosup/internal/inventory"
 	"github.com/taihen/rosup/internal/lockfile"
+	"github.com/taihen/rosup/internal/progress"
 	"github.com/taihen/rosup/internal/transport"
 	"github.com/taihen/rosup/internal/validate"
 )
@@ -47,8 +48,9 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	}
 
 	return validate.Verify(cmd.Context(), validate.Request{
-		Config: cfg,
-		Device: *device,
-		Dial:   transport.Dial,
+		Config:   cfg,
+		Device:   *device,
+		Dial:     transport.Dial,
+		Progress: progress.New(cmd.OutOrStdout(), []string{device.Name}),
 	})
 }

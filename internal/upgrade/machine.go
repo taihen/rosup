@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/taihen/rosup/internal/discover"
 	"github.com/taihen/rosup/internal/inventory"
 	"github.com/taihen/rosup/internal/preflight"
+	"github.com/taihen/rosup/internal/progress"
 	"github.com/taihen/rosup/internal/release"
 	"github.com/taihen/rosup/internal/routerboot"
 	"github.com/taihen/rosup/internal/state"
@@ -62,6 +64,7 @@ type Options struct {
 	Dial  discover.DialFunc
 	Clock Clock
 	Push  func(ctx context.Context, cfg *config.Config, job *state.DeviceJob, jobID string, artifacts auditgit.Artifacts) error
+	Out   io.Writer
 }
 
 type realClock struct{}
@@ -92,8 +95,14 @@ func Run(ctx context.Context, cfg *config.Config, version, group string, opts Op
 		return err
 	}
 
+	names := make([]string, len(devices))
+	for i, d := range devices {
+		names[i] = d.Name
+	}
+	printer := progress.New(opts.Out, names)
+
 	for _, d := range devices {
-		if err := runDevice(ctx, cfg, version, d, man, opts); err != nil {
+		if err := runDevice(ctx, cfg, version, d, man, opts, printer); err != nil {
 			return err
 		}
 	}
@@ -113,12 +122,13 @@ func applyDefaults(opts Options) Options {
 	return opts
 }
 
-func runDevice(ctx context.Context, cfg *config.Config, version string, d inventory.Device, man release.Manifest, opts Options) error {
+func runDevice(ctx context.Context, cfg *config.Config, version string, d inventory.Device, man release.Manifest, opts Options, printer *progress.Printer) error {
 	job, err := loadOrNew(cfg.StateDir, d)
 	if err != nil {
 		return err
 	}
 	if job.Status == state.StatusComplete && job.Release == version {
+		printer.Skip(d.Name, "already "+version)
 		return nil
 	}
 	if job.Status == state.StatusComplete {
@@ -139,25 +149,34 @@ func runDevice(ctx context.Context, cfg *config.Config, version string, d invent
 	}
 
 	r := &deviceRun{
-		ctx:     ctx,
-		cfg:     cfg,
-		version: version,
-		d:       d,
-		man:     man,
-		opts:    opts,
-		job:     job,
+		ctx:      ctx,
+		cfg:      cfg,
+		version:  version,
+		d:        d,
+		man:      man,
+		opts:     opts,
+		job:      job,
+		progress: printer,
 	}
 	defer r.closeClient()
 
+	skippedCurrent := false
 	start := startIndex(job.Stage)
 	for i := start; i < len(stages); i++ {
 		st := stages[i]
 		if r.skipBecauseCurrent(st) {
+			if !skippedCurrent {
+				r.progress.Skip(d.Name, "already "+version)
+				skippedCurrent = true
+			}
 			continue
 		}
 		if skip, err := r.skipRouterbootStage(st); err != nil {
 			return markFailed(cfg.StateDir, job, err)
 		} else if skip {
+			if st == StageRouterbootUpdate {
+				r.progress.Skip(d.Name, "RouterBOOT already current")
+			}
 			continue
 		}
 		if err := state.Advance(cfg.StateDir, job, st); err != nil {
@@ -189,32 +208,43 @@ type deviceRun struct {
 	export     string
 	skipRB     *bool
 	downgraded bool
+	progress   *progress.Printer
+}
+
+func (r *deviceRun) tracked(label string, fn func() error) error {
+	return r.progress.Track(r.d.Name, label, fn)
 }
 
 func (r *deviceRun) step(st string) error {
 	switch st {
 	case StageDiscover:
-		return r.discover()
+		return r.tracked("checking SSH and version", r.discover)
 	case StagePreflight:
-		return r.preflight()
+		return r.tracked("checking this release", r.preflight)
 	case StageExportText, StageSaveBinaryBackup:
-		return r.backup()
+		if r.backedUp {
+			return nil
+		}
+		return r.tracked("saving backups", r.backup)
 	case StagePackages:
-		return r.stagePackages()
+		return r.tracked("installing packages", r.stagePackages)
 	case StageReboot:
-		return r.reboot()
+		return r.tracked("rebooting", r.reboot)
 	case StageWaitForReconnect:
-		return r.waitReconnect()
+		return waitForReconnect(r.ctx, r.cfg, r.d, r.opts, r.progress)
 	case StageValidateRole:
-		return r.validateRole()
+		return r.checkRoleAt(r.version, false, "")
 	case StageRouterbootUpdate:
-		return r.routerbootUpdate()
+		return r.tracked("updating RouterBOOT", r.routerbootUpdate)
 	case StageRebootRouterboot:
-		return r.rebootRouterboot()
+		return r.tracked("rebooting for RouterBOOT", r.rebootRouterboot)
 	case StageValidateAfterRouterboot:
-		return r.validateAfterRouterboot()
+		if err := waitForReconnect(r.ctx, r.cfg, r.d, r.opts, r.progress); err != nil {
+			return err
+		}
+		return r.checkRoleAt(r.version, true, " after RouterBOOT")
 	case StageComplete:
-		return r.complete()
+		return r.tracked("writing audit", r.complete)
 	default:
 		return fmt.Errorf("upgrade: %s: unknown stage %s", r.d.Name, st)
 	}
@@ -318,15 +348,6 @@ func (r *deviceRun) snapshotBaseline() error {
 	return validate.WriteBaseline(dir, validate.FromFacts(r.d.Name, facts, true, roleFacts))
 }
 
-func (r *deviceRun) waitReconnect() error {
-	r.closeClient()
-	return waitForReconnect(r.ctx, r.cfg, r.d, r.opts)
-}
-
-func (r *deviceRun) validateRole() error {
-	return r.checkRoleAt(r.version, false)
-}
-
 func (r *deviceRun) skipBecauseCurrent(st string) bool {
 	if st == StageDiscover || st == StageComplete {
 		return false
@@ -389,14 +410,7 @@ func (r *deviceRun) rebootRouterboot() error {
 	return nil
 }
 
-func (r *deviceRun) validateAfterRouterboot() error {
-	if err := waitForReconnect(r.ctx, r.cfg, r.d, r.opts); err != nil {
-		return err
-	}
-	return r.checkRoleAt(r.version, true)
-}
-
-func (r *deviceRun) checkRoleAt(target string, upgradeFirmware bool) error {
+func (r *deviceRun) checkRoleAt(target string, upgradeFirmware bool, suffix string) error {
 	profile := r.d.ValidationProfile
 	if profile == "" {
 		profile = r.d.Role
@@ -410,6 +424,8 @@ func (r *deviceRun) checkRoleAt(target string, upgradeFirmware bool) error {
 		Profile:         profile,
 		UpgradeFirmware: upgradeFirmware,
 		RoleCheck:       validate.RoleChecks[profile],
+		Progress:        r.progress,
+		LabelSuffix:     suffix,
 	})
 }
 
@@ -452,21 +468,26 @@ func (r *deviceRun) downgradeToPrevious() error {
 	if err := r.ensureClient(); err != nil {
 		return err
 	}
-	if err := r.uploadFiles(prev, files); err != nil {
+	if err := r.tracked("restoring previous release", func() error {
+		if err := r.uploadFiles(prev, files); err != nil {
+			return err
+		}
+		_, err := r.client.Run(r.ctx, cmdReboot)
+		r.closeClient()
+		if err != nil && r.ctx.Err() != nil {
+			return fmt.Errorf("upgrade: %s: %s: %w", r.d.Name, cmdReboot, r.ctx.Err())
+		}
+		return nil
+	}); err != nil {
 		return err
 	}
-	_, err = r.client.Run(r.ctx, cmdReboot)
-	r.closeClient()
-	if err != nil && r.ctx.Err() != nil {
-		return fmt.Errorf("upgrade: %s: %s: %w", r.d.Name, cmdReboot, r.ctx.Err())
-	}
-	if err := waitForReconnect(r.ctx, r.cfg, r.d, r.opts); err != nil {
+	if err := waitForReconnect(r.ctx, r.cfg, r.d, r.opts, r.progress); err != nil {
 		return err
 	}
 	if err := r.copyBaseline(prev); err != nil {
 		return err
 	}
-	return r.checkRoleAt(prev, false)
+	return r.checkRoleAt(prev, false, "")
 }
 
 func (r *deviceRun) copyBaseline(prev string) error {
@@ -527,7 +548,7 @@ func (r *deviceRun) closeClient() {
 	r.client = nil
 }
 
-func waitForReconnect(ctx context.Context, cfg *config.Config, d inventory.Device, opts Options) error {
+func waitForReconnect(ctx context.Context, cfg *config.Config, d inventory.Device, opts Options, printer *progress.Printer) error {
 	attempts := cfg.Reconnect.Attempts
 	timeout := cfg.Reconnect.Timeout
 	if attempts <= 0 {
@@ -536,6 +557,8 @@ func waitForReconnect(ctx context.Context, cfg *config.Config, d inventory.Devic
 	if timeout <= 0 {
 		timeout = 3 * time.Minute
 	}
+	waiting := "waiting for SSH"
+	printer.Start(d.Name, waiting+" ("+progress.FormatDuration(timeout)+")")
 	deadline := opts.Clock.Now().Add(timeout)
 	port := d.Port
 	if port == 0 {
@@ -545,17 +568,18 @@ func waitForReconnect(ctx context.Context, cfg *config.Config, d inventory.Devic
 	var last error
 	for n := 1; n <= attempts; n++ {
 		if err := ctx.Err(); err != nil {
+			printer.Fail()
 			return err
 		}
+		left := max(time.Duration(0), deadline.Sub(opts.Clock.Now()))
+		printer.Update(waiting + " (" + progress.FormatLeft(left, timeout) + ")")
 		if !opts.Clock.Now().Before(deadline) {
-			if last != nil {
-				return fmt.Errorf("upgrade: %s: reconnect timed out: %w", d.Name, last)
-			}
-			return fmt.Errorf("upgrade: %s: reconnect timed out", d.Name)
+			break
 		}
 		client, err := opts.Dial(ctx, cfg.SSH, d.Address, port)
 		if err == nil {
 			_ = client.Close()
+			printer.OK()
 			return nil
 		}
 		last = err
@@ -568,10 +592,15 @@ func waitForReconnect(ctx context.Context, cfg *config.Config, d inventory.Devic
 		}
 		opts.Clock.Sleep(remaining / time.Duration(attempts-n+1))
 	}
+	printer.Fail()
+	return reconnectTimeout(d.Name, last)
+}
+
+func reconnectTimeout(name string, last error) error {
 	if last != nil {
-		return fmt.Errorf("upgrade: %s: reconnect timed out: %w", d.Name, last)
+		return fmt.Errorf("upgrade: %s: reconnect timed out: %w", name, last)
 	}
-	return fmt.Errorf("upgrade: %s: reconnect timed out", d.Name)
+	return fmt.Errorf("upgrade: %s: reconnect timed out", name)
 }
 
 func loadOrNew(stateDir string, d inventory.Device) (*state.DeviceJob, error) {

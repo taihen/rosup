@@ -1,6 +1,7 @@
 package validate_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"github.com/taihen/rosup/internal/config"
 	"github.com/taihen/rosup/internal/discover"
 	"github.com/taihen/rosup/internal/inventory"
+	"github.com/taihen/rosup/internal/progress"
 	"github.com/taihen/rosup/internal/transport"
 	"github.com/taihen/rosup/internal/validate"
 )
@@ -202,6 +204,34 @@ func TestCheckWaitsProfileTimeoutNotReconnectBudget(t *testing.T) {
 	}
 	if clock.now.Sub(clock.start) == 3*time.Minute {
 		t.Fatal("used reconnect budget")
+	}
+}
+
+func TestCheckPlainProgress(t *testing.T) {
+	cfg := testConfig(t)
+	writeProfile(t, cfg, "ospf", "convergence_timeout: 5m\n")
+	writeBaselineFor(t, cfg, sampleFacts(current))
+
+	var buf bytes.Buffer
+	err := validate.Check(context.Background(), validate.Request{
+		Config:   cfg,
+		Device:   testDevice(),
+		Target:   target,
+		Dial:     dialClient(newFakeClient(t, target, []string{"routeros", "wireless"}, ros6Fixture(t, "log-print-system.txt"))),
+		Clock:    newFakeClock(),
+		Profile:  "ospf",
+		Progress: progress.New(&buf, []string{"router-01"}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "" +
+		">  router-01  waiting for ospf (5m)\n" +
+		"*  router-01  waiting for ospf (5m)\n" +
+		">  router-01  checking ospf\n" +
+		"*  router-01  checking ospf\n"
+	if buf.String() != want {
+		t.Fatalf("got %q want %q", buf.String(), want)
 	}
 }
 

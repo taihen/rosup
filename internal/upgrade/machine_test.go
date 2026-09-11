@@ -1,6 +1,7 @@
 package upgrade_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -342,6 +343,128 @@ func TestAlreadyOnReleaseDoesNotBlockLaterDevices(t *testing.T) {
 	}
 	if job.Status != state.StatusComplete {
 		t.Fatalf("status %q", job.Status)
+	}
+}
+
+func TestAlreadyOnReleasePlainProgress(t *testing.T) {
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	sim := world.sim("router-01")
+	sim.version = target
+	sim.currentFirmware = "6.45.8"
+	sim.upgradeFirmware = "6.49.21"
+	var buf bytes.Buffer
+	opts := world.opts()
+	opts.Out = &buf
+
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", opts); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, ">  router-01  checking SSH and version\n") {
+		t.Fatalf("got %q", out)
+	}
+	if !strings.Contains(out, "*  router-01  checking SSH and version\n") {
+		t.Fatalf("got %q", out)
+	}
+	if !strings.Contains(out, "-  router-01  already 6.49.21\n") {
+		t.Fatalf("got %q", out)
+	}
+	if !strings.Contains(out, "*  router-01  writing audit\n") {
+		t.Fatalf("got %q", out)
+	}
+	if strings.Contains(out, "installing packages") {
+		t.Fatalf("current device should not install: %q", out)
+	}
+}
+
+func TestHappyPathPlainProgress(t *testing.T) {
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	var buf bytes.Buffer
+	opts := world.opts()
+	opts.Out = &buf
+
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", opts); err != nil {
+		t.Fatal(err)
+	}
+	want := "" +
+		">  router-01  checking SSH and version\n" +
+		"*  router-01  checking SSH and version\n" +
+		">  router-01  checking this release\n" +
+		"*  router-01  checking this release\n" +
+		">  router-01  saving backups\n" +
+		"*  router-01  saving backups\n" +
+		">  router-01  installing packages\n" +
+		"*  router-01  installing packages\n" +
+		">  router-01  rebooting\n" +
+		"*  router-01  rebooting\n" +
+		">  router-01  waiting for SSH (3m)\n" +
+		"*  router-01  waiting for SSH (3m)\n" +
+		">  router-01  waiting for ospf (5m)\n" +
+		"*  router-01  waiting for ospf (5m)\n" +
+		">  router-01  checking ospf\n" +
+		"*  router-01  checking ospf\n" +
+		"-  router-01  RouterBOOT already current\n" +
+		">  router-01  writing audit\n" +
+		"*  router-01  writing audit\n"
+	if buf.String() != want {
+		t.Fatalf("got %q want %q", buf.String(), want)
+	}
+}
+
+func TestCompleteJobPlainProgressIsSingleSkip(t *testing.T) {
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts()); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	opts := world.opts()
+	opts.Out = &buf
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", opts); err != nil {
+		t.Fatal(err)
+	}
+	want := "-  router-01  already 6.49.21\n"
+	if buf.String() != want {
+		t.Fatalf("got %q want %q", buf.String(), want)
+	}
+}
+
+func TestReconnectTimeoutPlainProgress(t *testing.T) {
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	cfg.Reconnect.Timeout = 3 * time.Minute
+	cfg.Reconnect.Attempts = 3
+	sim := world.sim("router-01")
+	sim.version = target
+	sim.rebooted = true
+	sim.reconnectFailsLeft = 100
+	job := &state.DeviceJob{
+		Device:  "router-01",
+		Release: target,
+		Group:   "core-a",
+		Stage:   upgrade.StageWaitForReconnect,
+		Status:  state.StatusInProgress,
+		Facts:   factsJSON(t, sampleFacts(current)),
+	}
+	if err := state.Save(cfg.StateDir, job); err != nil {
+		t.Fatal(err)
+	}
+	writeJobBaseline(t, cfg, "router-01", sampleFacts(current))
+	world.clock.jump = cfg.Reconnect.Timeout
+	var buf bytes.Buffer
+	opts := world.opts()
+	opts.Out = &buf
+
+	err := upgrade.Run(context.Background(), cfg, target, "core-a", opts)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	want := "" +
+		">  router-01  waiting for SSH (3m)\n" +
+		"x  router-01  waiting for SSH (3m)\n"
+	if buf.String() != want {
+		t.Fatalf("got %q want %q", buf.String(), want)
+	}
+	if strings.Contains(buf.String(), "left of") {
+		t.Fatalf("plain mode should not print countdown: %q", buf.String())
 	}
 }
 
