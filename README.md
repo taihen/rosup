@@ -1,89 +1,157 @@
 # rosup
 
-A portable Go CLI for MikroTik RouterOS 6 Long-term only. It syncs packages, upgrades one device at a time, validates by role, and writes text audit history.
+rosup is for people who still run a small or medium RouterOS 6 network.
 
-RouterOS 7 and other channels are not supported.
+It downloads Long-term packages, upgrades one device at a time, checks the result, and writes a text audit.
+
+> ⚠️ RouterOS 7 and other channels are not supported.
+
+## Architecture
+
+Three places matter.
+
+**Git** is the ops repo. The checkout lives at `ops.path` and the remote is `ops.remote`. You commit `inventory/` so the controller knows which boxes exist and which role each one has. After an upgrade finishes, rosup writes `audit/` so you can read what changed without mixing that into inventory. The GitHub deploy key is ed25519.
+
+**Managed devices** are the rows in `inventory/devices.yaml`. Each row is a name, address, port, role, group, and order. That file is the fleet. rosup does not scan the network. Upgrade order is group, then order, then name.
+
+**RouterOS** runs on those devices. The controller logs in as user `rosup` over SSH with an RSA key. That is the OS being upgraded. One device at a time, so a failure stops the run before the next box.
+
+The controller itself is a trusted host with a static address. Devices allow that address only.
 
 ## Install
 
-Download the `rosup-linux-amd64` binary from a [GitHub Release](https://github.com/taihen/rosup/releases) and place it on your `PATH`.
+Download `rosup-linux-amd64` from a [GitHub Release](https://github.com/taihen/rosup/releases) and put it on `PATH`. The image `ghcr.io/taihen/rosup` runs as uid `65532`. Mount every path from the config into the container.
 
-Or pull the container image:
-
-```bash
-docker pull ghcr.io/taihen/rosup
-```
-
-The image runs as uid/gid `65532:65532` on a distroless base. There is no shell, `ssh`, or `git` inside the image.
-
-## Configuration
-
-rosup reads a YAML config file. Path resolution:
-
-1. `--config` flag
-2. `ROSUP_CONFIG` environment variable
-3. `./rosup.yaml`
-
-A missing config file is a fatal error. Paths in the config are not compiled into the binary.
-
-Typical keys include `data_dir`, `state_dir`, `package_dir`, `backup_dir`, `lock_path`, `ops.path`, and SSH settings (`private_key_path`, `known_hosts_path`). `channel` must be `long-term`.
-
-## Commands
-
-| Command | Purpose |
-| --- | --- |
-| `rosup discover` | Read-only facts from a device |
-| `rosup release sync` | Download Long-term packages to `package_dir` |
-| `rosup release list` | List locally synced release versions |
-| `rosup plan` | Show what an upgrade would do |
-| `rosup upgrade` | Run the upgrade for a group |
-| `rosup verify` | Re-check a device against its role profile |
-| `rosup rollback` | Downgrade packages to a complete local release |
-| `rosup backup restore` | Restore a local `.backup` file to a device |
-
-`rosup version` prints the build version.
-
-## Host keys (TOFU)
-
-SSH host keys use trust on first use. The first successful connection stores the key in `known_hosts`. A later mismatch is a hard failure. To recover, remove the stale entry from the known_hosts file after you have confirmed the device identity out of band.
-
-## Lockfile
-
-Only one controller may run at a time. The lockfile is shared by the host binary and the container. Starting a second instance fails until the lock is released.
-
-## Container mounts
-
-Bind-mount every path the config references, owned by uid `65532`. At minimum:
-
-| Config key | What to mount |
-| --- | --- |
-| `data_dir` | Working data; per-device baselines live in `data_dir/jobs` |
-| `state_dir` | Per-device job state |
-| `package_dir` | Synced `.npk` packages |
-| `backup_dir` | Binary backups |
-| `ops.path` | Inventory and audit git checkout |
-| `ssh.private_key_path` | SSH private key |
-| `ssh.known_hosts_path` | Known hosts file |
-| `lock_path` | Controller lockfile (or its parent directory) |
-
-Example:
+Pass `--config`, or set `ROSUP_CONFIG`. If neither is set, rosup reads `./rosup.yaml`.
 
 ```bash
-docker run --rm \
-  --user 65532:65532 \
-  -v /var/lib/rosup/data:/data \
-  -v /var/lib/rosup/state:/state \
-  -v /var/lib/rosup/packages:/packages \
-  -v /var/lib/rosup/backups:/backups \
-  -v /var/lib/rosup/ops:/ops \
-  -v /var/lib/rosup/ssh:/ssh \
-  -v /path/to/rosup.yaml:/config/rosup.yaml:ro \
-  ghcr.io/taihen/rosup \
-  --config /config/rosup.yaml \
-  version
+rosup version
 ```
 
-Adjust host paths to match your layout. The process cannot write where uid `65532` lacks permission.
+## Keys
+
+> ⚠️ `ssh-keygen` rosup runs unattended, so the keys carry no passphrase.
+
+```bash
+mkdir -p /var/lib/rosup/ssh
+ssh-keygen -t rsa -b 4096 -N '' -C rosup-controller -f /var/lib/rosup/ssh/id_rsa
+ssh-keygen -t ed25519 -N '' -C rosup-ops -f /var/lib/rosup/ssh/id_ed25519_ops
+chmod 700 /var/lib/rosup/ssh
+chmod 600 /var/lib/rosup/ssh/id_rsa /var/lib/rosup/ssh/id_ed25519_ops
+```
+
+The RSA pair is the RouterOS user key. The ed25519 pair is the GitHub deploy key for the ops repo. Those paths are the ones in [Config](#config). Add `id_ed25519_ops.pub` as a deploy key on the ops repo. In the container, uid `65532` must be able to read the files.
+
+Record GitHub host keys for `ops.git_known_hosts_path` so git does not prompt:
+
+```bash
+ssh-keyscan github.com > /var/lib/rosup/ssh/github_known_hosts
+```
+
+## Create the device user
+
+Upload `id_rsa.pub` to the device first.
+
+> RouterOS 6.49 rejects ed25519 user keys.
+
+From an admin session:
+
+```
+/user add name=rosup group=full password=... address=CONTROLLER_IPV4/32 comment="rosup-controller"
+/user ssh-keys import user=rosup public-key-file=id_rsa.pub
+```
+
+RouterOS requires a password on `/user add`. rosup logs in with the key. If failed logins put the controller on the `/ip ssh` blacklist, clear it from an admin session before retrying.
+
+The first successful SSH stores the host key. A later mismatch is a hard failure. Remove the stale `known_hosts` entry after you confirm the device yourself.
+
+## Prepare the ops repo
+
+Point `ops.path` at an ops git checkout:
+
+```
+inventory/devices.yaml
+inventory/profiles/<role>.yaml
+audit/
+```
+
+Commit `inventory/` yourself. rosup never commits that path. `audit/` is written when an upgrade completes. Do not edit it.
+
+```yaml
+# Human-edited. rosup never commits this path.
+devices:
+  - name: edge-1
+    address: 192.0.2.10
+    port: 60022
+    role: radio
+    group: radio
+    validation_profile: radio
+    order: 10
+```
+
+`role` and `validation_profile` must each be `ospf`, `pppoe`, `radio`, `switch`, or `access`. They are usually the same. Each used role needs `inventory/profiles/<role>.yaml` with `convergence_timeout`. That wait starts after SSH is back, not during the 3m reconnect. Radio is typically 5m. PPPoE is 10m plus `session_restore_timeout`. Do not upgrade a console router with almost no free disk.
+
+## Config
+
+```yaml
+data_dir: /var/lib/rosup
+state_dir: /var/lib/rosup/state
+package_dir: /var/lib/rosup/packages
+backup_dir: /var/lib/rosup/backups
+lock_path: /var/lib/rosup/state/rosup.lock
+architectures:
+  - arm
+channel: long-term
+ops:
+  path: /var/lib/rosup/ops
+  remote: git@github.com:ORG/rosup-ops.git
+  ssh_private_key_path: /var/lib/rosup/ssh/id_ed25519_ops
+  git_known_hosts_path: /var/lib/rosup/ssh/github_known_hosts
+ssh:
+  private_key_path: /var/lib/rosup/ssh/id_rsa
+  known_hosts_path: /var/lib/rosup/ssh/known_hosts
+  default_port: 60022
+```
+
+`channel` must be `long-term`. `architectures` must list every arch you sync. Username defaults to `rosup`. `ssh.default_port` defaults to 22. Set `60022` if that is the device port. TOFU defaults to true. Reconnect defaults to 3m and 3 attempts. If `ops.ssh_private_key_path` is set, `ops.git_known_hosts_path` is required. That file is GitHub host keys, never the RouterOS TOFU file. The Go binary has no shell, git, or ssh.
+
+## Upgrade
+
+Prove SSH once:
+
+```bash
+rosup discover
+rosup discover --group GROUP
+```
+
+Each Long-term release:
+
+```bash
+rosup release sync
+rosup plan --release VERSION
+rosup upgrade --release VERSION --group GROUP
+```
+
+`release sync` prints `synced VERSION (N files)`. Use that VERSION. Omit `--group` to do every device. One device at a time. The first failure stops the run. A device already on the release skips packages and reboot.
+
+```
+>  edge-1  checking SSH and version
+*  edge-1  checking SSH and version
+-  edge-1  already VERSION
+x  edge-1  installing packages
+```
+
+`>` started, `*` done, `-` skipped, `x` failed. Errors on stderr.
+
+## If it fails
+
+Only one controller may run. A second instance fails until the lock is released.
+
+```bash
+rosup verify DEVICE
+rosup rollback DEVICE --to-version VERSION
+rosup backup restore DEVICE --file PATH
+```
 
 ## License
 
