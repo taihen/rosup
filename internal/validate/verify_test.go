@@ -69,3 +69,21 @@ func TestVerifySelfBaselineWhenMissing(t *testing.T) {
 		}
 	}
 }
+
+func TestVerifySelfBaselineWhenSystemLogHasNoInstallLines(t *testing.T) {
+	cfg := testConfig(t)
+	writeProfile(t, cfg, "ospf", ospfProfileYAML())
+	client := newFakeClient(t, "6.49.15", []string{"routeros-mipsbe", "wireless"}, ros6Fixture(t, "log-print-system-login-only.txt")).
+		set(validate.CmdOSPFNeighbor, ros6Fixture(t, "ospf-neighbor-print.txt")).
+		set(validate.CmdIPRoute, ros6Fixture(t, "ip-route-print.txt"))
+
+	if err := validate.Verify(context.Background(), validate.Request{
+		Config:  cfg,
+		Device:  testDeviceRole("ospf"),
+		Dial:    dialClient(client),
+		Clock:   newFakeClock(),
+		Profile: "ospf",
+	}); err != nil {
+		t.Fatal(err)
+	}
+}

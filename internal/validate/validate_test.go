@@ -157,6 +157,12 @@ func TestParseInstallLogFixtureDetectsError(t *testing.T) {
 	}
 }
 
+func TestParseInstallLogWithoutInstallLinesIsOK(t *testing.T) {
+	if err := validate.InstallErrors(ros6Fixture(t, "log-print-system-login-only.txt")); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLoadProfileConvergenceTimeoutFromOpsPath(t *testing.T) {
 	cfg := testConfig(t)
 	writeProfile(t, cfg, "ospf", "convergence_timeout: 5m\n")
