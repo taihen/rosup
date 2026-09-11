@@ -24,6 +24,7 @@ type Report struct {
 type Device struct {
 	Device  inventory.Device
 	Missing []string
+	Skip    string
 	Err     error
 }
 
@@ -53,9 +54,14 @@ func Run(ctx context.Context, cfg *config.Config, version, group string, discove
 		Devices: make([]Device, 0, len(results)),
 	}
 	for _, r := range results {
+		skip := ""
+		if preflight.AlreadyOnRelease(r.Facts, version) {
+			skip = "already " + r.Facts.Version
+		}
 		report.Devices = append(report.Devices, Device{
 			Device:  r.Device,
 			Missing: missingPackages(r.Facts, man),
+			Skip:    skip,
 			Err:     preflight.Check(r.Facts, man),
 		})
 	}
@@ -80,6 +86,11 @@ func Format(w io.Writer, r *Report) error {
 		if _, err := fmt.Fprintf(w, "%s\n  order: %d\n  role: %s\n  missing: %s\n",
 			d.Device.Name, d.Device.Order, d.Device.Role, missing); err != nil {
 			return err
+		}
+		if d.Skip != "" {
+			if _, err := fmt.Fprintf(w, "  skip: %s\n", d.Skip); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

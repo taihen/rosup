@@ -208,6 +208,33 @@ func TestRunDiskPreflightFailsWithNoMissing(t *testing.T) {
 	}
 }
 
+func TestRunSkipsDiskPreflightWhenAlreadyOnRelease(t *testing.T) {
+	cfg := testConfig(t)
+	writeManifest(t, cfg, manifest(
+		npk("routeros", "arm", 3<<20),
+		npk("wireless", "arm", 2<<20),
+		npk("routeros", "mipsbe", 3<<20),
+		npk("wireless", "mipsbe", 2<<20),
+	))
+	report, err := plan.Run(context.Background(), cfg, "6.49.21", "", fakeDiscover(
+		result("boa", "access", 0, armFacts("6.49.21", "1916.0KiB", "routeros-arm", "wireless")),
+		result("SAUZA2", "radio", 0, archFacts("mipsbe", "6.49.15", "107.0MiB", "routeros-mipsbe", "wireless")),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.Failure(report); err != nil {
+		t.Fatal(err)
+	}
+	out := format(t, report)
+	if !strings.Contains(out, "boa") || !strings.Contains(out, "skip: already 6.49.21") {
+		t.Fatalf("got %q", out)
+	}
+	if strings.Count(out, "skip:") != 1 {
+		t.Fatalf("want skip only for boa, got %q", out)
+	}
+}
+
 func TestRunEmptyGroupDiscoversAll(t *testing.T) {
 	cfg := testConfig(t)
 	writeManifest(t, cfg, manifest(npk("routeros", "arm", 1000)))

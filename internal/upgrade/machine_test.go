@@ -280,6 +280,71 @@ func TestCompleteSameReleaseSkipsSecondUpgrade(t *testing.T) {
 	}
 }
 
+func TestAlreadyOnReleaseSkipsPackagesRebootAndRouterBOOT(t *testing.T) {
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	sim := world.sim("router-01")
+	sim.version = target
+	sim.currentFirmware = "6.45.8"
+	sim.upgradeFirmware = "6.49.21"
+
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts()); err != nil {
+		t.Fatal(err)
+	}
+
+	job, err := state.Load(cfg.StateDir, "router-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != state.StatusComplete {
+		t.Fatalf("status %q", job.Status)
+	}
+	if len(sim.uploads) != 0 {
+		t.Fatalf("uploaded %v", sim.uploads)
+	}
+	if sim.reboots != 0 {
+		t.Fatalf("reboots %d", sim.reboots)
+	}
+	if contains(sim.runs, "/system routerboard upgrade") {
+		t.Fatal("RouterBOOT upgrade ran on current release")
+	}
+	if contains(sim.runs, "/export hide-sensitive") {
+		t.Fatal("backup ran on current release")
+	}
+	if !contains(sim.runs, "/system resource print") {
+		t.Fatal("discover should still run")
+	}
+}
+
+func TestAlreadyOnReleaseDoesNotBlockLaterDevices(t *testing.T) {
+	cfg, world := setup(t,
+		device("router-01", "core-a", 10, nil),
+		device("router-02", "core-a", 20, nil),
+	)
+	first := world.sim("router-01")
+	first.version = target
+	first.currentFirmware = "6.45.8"
+	first.upgradeFirmware = "6.49.21"
+
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts()); err != nil {
+		t.Fatal(err)
+	}
+
+	if first.reboots != 0 {
+		t.Fatalf("current device reboots %d", first.reboots)
+	}
+	second := world.sim("router-02")
+	if second.reboots != 1 {
+		t.Fatalf("older device reboots %d, want 1", second.reboots)
+	}
+	job, err := state.Load(cfg.StateDir, "router-02")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != state.StatusComplete {
+		t.Fatalf("status %q", job.Status)
+	}
+}
+
 func TestResumeFromStage(t *testing.T) {
 	tests := []struct {
 		stage      string
