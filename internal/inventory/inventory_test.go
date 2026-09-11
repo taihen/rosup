@@ -415,3 +415,98 @@ devices:
 		t.Fatalf("len %d", len(devices))
 	}
 }
+
+func TestLoadRejectsDuplicateNames(t *testing.T) {
+	cfg := writeInventory(t, "inventory/devices.yaml", `
+devices:
+  - name: router-01
+    address: 192.0.2.1
+    role: ospf
+    group: a
+    order: 10
+    validation_profile: ospf
+  - name: router-01
+    address: 192.0.2.2
+    role: ospf
+    group: a
+    order: 20
+    validation_profile: ospf
+`)
+	_, err := inventory.Load(cfg)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestLoadRejectsDuplicateAddressPort(t *testing.T) {
+	cfg := writeInventory(t, "inventory/devices.yaml", `
+devices:
+  - name: router-01
+    address: 192.0.2.1
+    port: 60022
+    role: ospf
+    group: a
+    order: 10
+    validation_profile: ospf
+  - name: router-02
+    address: 192.0.2.1
+    port: 60022
+    role: ospf
+    group: a
+    order: 20
+    validation_profile: ospf
+`)
+	_, err := inventory.Load(cfg)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "share address") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestLoadRejectsDependCycles(t *testing.T) {
+	cfg := writeInventory(t, "inventory/devices.yaml", `
+devices:
+  - name: a
+    address: 192.0.2.1
+    role: ospf
+    group: g
+    order: 1
+    validation_profile: ospf
+    depends_on: [b]
+  - name: b
+    address: 192.0.2.2
+    role: ospf
+    group: g
+    order: 2
+    validation_profile: ospf
+    depends_on: [a]
+`)
+	_, err := inventory.Load(cfg)
+	if err == nil || !strings.Contains(err.Error(), "cycle") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestLoadRejectsUnsafeDeviceName(t *testing.T) {
+	cfg := writeInventory(t, "inventory/devices.yaml", `
+devices:
+  - name: "x password=secret"
+    address: 192.0.2.1
+    role: ospf
+    group: a
+    order: 10
+    validation_profile: ospf
+`)
+	_, err := inventory.Load(cfg)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "must match") {
+		t.Fatalf("got %v", err)
+	}
+}

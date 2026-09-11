@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 
 	"github.com/spf13/cobra"
@@ -30,6 +31,10 @@ func runUpgrade(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	resume, err := cmd.Flags().GetBool("resume")
+	if err != nil {
+		return err
+	}
 
 	cfg, err := loadConfig(cmd)
 	if err != nil {
@@ -41,8 +46,16 @@ func runUpgrade(cmd *cobra.Command, _ []string) error {
 	}
 	defer func() { _ = unlock() }()
 
-	return upgrade.Run(cmd.Context(), cfg, version, group, upgrade.Options{
-		Dial: transport.Dial,
-		Out:  cmd.OutOrStdout(),
+	ctx := cmd.Context()
+	if cfg.UpgradeTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, cfg.UpgradeTimeout)
+		defer cancel()
+	}
+
+	return upgrade.Run(ctx, cfg, version, group, upgrade.Options{
+		Dial:   transport.Dial,
+		Out:    cmd.OutOrStdout(),
+		Resume: resume,
 	})
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	git "github.com/go-git/go-git/v5"
@@ -53,12 +54,15 @@ func Push(ctx context.Context, cfg *config.Config, job *state.DeviceJob, jobID s
 	if err != nil {
 		return fmt.Errorf("auditgit: open %s: %w", cfg.Ops.Path, err)
 	}
+	if err := checkRemote(repo, cfg.Ops.Remote); err != nil {
+		return err
+	}
 	wt, err := repo.Worktree()
 	if err != nil {
 		return fmt.Errorf("auditgit: worktree: %w", err)
 	}
 
-	if err := wt.PullContext(ctx, &git.PullOptions{Auth: auth}); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
+	if err := wt.PullContext(ctx, &git.PullOptions{Auth: auth, RemoteName: "origin"}); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 		return fmt.Errorf("auditgit: pull: %w", err)
 	}
 
@@ -100,18 +104,37 @@ func Push(ctx context.Context, cfg *config.Config, job *state.DeviceJob, jobID s
 	if _, err := wt.Commit("audit: "+job.Device+" "+jobID, &git.CommitOptions{
 		Author:    sig,
 		Committer: sig,
-	}); err != nil {
+	}); err != nil && !errors.Is(err, git.ErrEmptyCommit) {
 		return fmt.Errorf("auditgit: commit: %w", err)
 	}
 
-	if err := repo.PushContext(ctx, &git.PushOptions{Auth: auth}); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
+	if err := repo.PushContext(ctx, &git.PushOptions{Auth: auth, RemoteName: "origin"}); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 		return fmt.Errorf("auditgit: push: %w", err)
 	}
 	return nil
 }
 
+func checkRemote(repo *git.Repository, want string) error {
+	if want == "" {
+		return errors.New("auditgit: ops.remote is required")
+	}
+	remote, err := repo.Remote("origin")
+	if err != nil {
+		return fmt.Errorf("auditgit: origin remote: %w", err)
+	}
+	for _, url := range remote.Config().URLs {
+		if url == want {
+			return nil
+		}
+	}
+	return fmt.Errorf("auditgit: origin URLs %v do not match ops.remote %q", remote.Config().URLs, want)
+}
+
 func gitAuth(cfg *config.Config) (transport.AuthMethod, error) {
 	keyPath := cfg.Ops.SSHPrivateKeyPath
+	if needsSSHAuth(cfg.Ops.Remote) && keyPath == "" {
+		return nil, errors.New("auditgit: ops.ssh_private_key_path is required for SSH remotes")
+	}
 	if keyPath == "" {
 		return nil, nil
 	}
@@ -128,6 +151,19 @@ func gitAuth(cfg *config.Config) (transport.AuthMethod, error) {
 	}
 	auth.HostKeyCallback = cb
 	return auth, nil
+}
+
+func needsSSHAuth(remote string) bool {
+	if strings.HasPrefix(remote, "git@") || strings.HasPrefix(remote, "ssh://") {
+		return true
+	}
+	// SCP-like: user@host:path (not a URL with ://)
+	if strings.Contains(remote, "://") {
+		return false
+	}
+	at := strings.Index(remote, "@")
+	colon := strings.LastIndex(remote, ":")
+	return at > 0 && colon > at
 }
 
 func validateName(kind, name string) error {

@@ -189,7 +189,13 @@ devices:
 	var dialed []string
 	dial := func(_ context.Context, _ config.SSHConfig, address string, _ int) (transport.Client, error) {
 		dialed = append(dialed, address)
-		return &fakeClient{outputs: fixtureOutputs(t)}, nil
+		outs := fixtureOutputs(t)
+		name := "edge-1"
+		if address == "192.0.2.1" {
+			name = "core-1"
+		}
+		outs["/system identity print"] = "  name: " + name + "\n"
+		return &fakeClient{outputs: outs}, nil
 	}
 
 	results, err := discover.Run(context.Background(), cfg, "edge", dial)
@@ -226,7 +232,13 @@ devices:
 	var dialed []string
 	dial := func(_ context.Context, _ config.SSHConfig, address string, _ int) (transport.Client, error) {
 		dialed = append(dialed, address)
-		return &fakeClient{outputs: fixtureOutputs(t)}, nil
+		outs := fixtureOutputs(t)
+		name := "edge-1"
+		if address == "192.0.2.1" {
+			name = "core-1"
+		}
+		outs["/system identity print"] = "  name: " + name + "\n"
+		return &fakeClient{outputs: outs}, nil
 	}
 
 	results, err := discover.Run(context.Background(), cfg, "", dial)

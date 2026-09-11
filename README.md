@@ -132,7 +132,7 @@ rosup plan --release VERSION
 rosup upgrade --release VERSION --group GROUP
 ```
 
-`release sync` prints `synced VERSION (N files)`. Use that VERSION. Omit `--group` to do every device. One device at a time. The first failure stops the run. A device already on the release skips packages and reboot.
+`release sync` prints `synced VERSION (N files)`. Use that VERSION. Omit `--group` to do every device. One device at a time. The first failure stops the run. A device already on the release skips packages and reboot. Incomplete jobs need `--resume` for the same release.
 
 ```
 >  edge-1  checking SSH and version
@@ -148,10 +148,15 @@ x  edge-1  installing packages
 Only one controller may run. A second instance fails until the lock is released.
 
 ```bash
+rosup status
+rosup status --group GROUP --release VERSION
 rosup verify DEVICE
+rosup upgrade --release VERSION --group GROUP --resume
 rosup rollback DEVICE --to-version VERSION
 rosup backup restore DEVICE --file PATH
 ```
+
+`status` joins inventory with local job state. After a fix, resume the same release; do not change `--release` mid-job. With `--resume`, only failed or in-progress jobs for that release continue; pending and untouched devices are skipped.
 
 ## License
 

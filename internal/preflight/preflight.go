@@ -14,8 +14,23 @@ const diskMarginBytes int64 = 1 << 20
 
 var sizeRe = regexp.MustCompile(`(?i)^([0-9]+(?:\.[0-9]+)?)\s*(b|kib|mib|gib|tib)?$`)
 
-func AlreadyOnRelease(facts discover.Facts, version string) bool {
+func VersionMatches(facts discover.Facts, version string) bool {
 	return facts.Version != "" && facts.Version == version
+}
+
+func AlreadyOnRelease(facts discover.Facts, version string) bool {
+	if !VersionMatches(facts, version) {
+		return false
+	}
+	if len(facts.Packages) == 0 {
+		return false
+	}
+	for _, p := range facts.Packages {
+		if p.Version != version {
+			return false
+		}
+	}
+	return true
 }
 
 func Check(facts discover.Facts, man release.Manifest) error {
@@ -25,7 +40,9 @@ func Check(facts discover.Facts, man release.Manifest) error {
 	if err := rejectROS7(man.Version); err != nil {
 		return err
 	}
-	if AlreadyOnRelease(facts, man.Version) {
+	// Disk check is only for staging packages. Matching system version means
+	// packages are already installed enough that free space is not a gate.
+	if VersionMatches(facts, man.Version) {
 		return nil
 	}
 

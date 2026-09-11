@@ -57,10 +57,24 @@ func Parse(resource, packages, routerboard, identity string) (Facts, error) {
 	if facts.UpgradeFirmware == "" {
 		return Facts{}, fmt.Errorf("discover: missing upgrade-firmware")
 	}
+	if facts.Identity == "" {
+		return Facts{}, fmt.Errorf("discover: missing identity")
+	}
 	if len(facts.Packages) == 0 {
 		return Facts{}, fmt.Errorf("discover: no packages")
 	}
 	return facts, nil
+}
+
+// MatchInventory requires RouterOS identity to equal the inventory device name.
+func MatchInventory(facts Facts, name string) error {
+	if facts.Identity == "" {
+		return fmt.Errorf("discover: missing identity")
+	}
+	if facts.Identity != name {
+		return fmt.Errorf("discover: identity %q does not match inventory name %q", facts.Identity, name)
+	}
+	return nil
 }
 
 func ros6Version(raw string) (string, error) {

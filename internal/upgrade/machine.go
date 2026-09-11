@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/taihen/rosup/internal/auditgit"
@@ -17,7 +18,9 @@ import (
 	"github.com/taihen/rosup/internal/inventory"
 	"github.com/taihen/rosup/internal/preflight"
 	"github.com/taihen/rosup/internal/progress"
+	"github.com/taihen/rosup/internal/redact"
 	"github.com/taihen/rosup/internal/release"
+	"github.com/taihen/rosup/internal/rosname"
 	"github.com/taihen/rosup/internal/routerboot"
 	"github.com/taihen/rosup/internal/state"
 	"github.com/taihen/rosup/internal/transport"
@@ -61,10 +64,11 @@ type Clock interface {
 }
 
 type Options struct {
-	Dial  discover.DialFunc
-	Clock Clock
-	Push  func(ctx context.Context, cfg *config.Config, job *state.DeviceJob, jobID string, artifacts auditgit.Artifacts) error
-	Out   io.Writer
+	Dial   discover.DialFunc
+	Clock  Clock
+	Push   func(ctx context.Context, cfg *config.Config, job *state.DeviceJob, jobID string, artifacts auditgit.Artifacts) error
+	Out    io.Writer
+	Resume bool
 }
 
 type realClock struct{}
@@ -132,10 +136,28 @@ func runDevice(ctx context.Context, cfg *config.Config, version string, d invent
 		return nil
 	}
 	if job.Status == state.StatusComplete {
-		return fmt.Errorf("upgrade: %s: %w", d.Name, state.ErrJobComplete)
+		// Prior release finished; start a fresh job for this release.
+		job = &state.DeviceJob{
+			Device: d.Name,
+			Group:  d.Group,
+			Facts:  job.Facts,
+		}
 	}
 
-	if err := checkDepends(cfg.StateDir, d); err != nil {
+	switch {
+	case job.Status == state.StatusInProgress || job.Status == state.StatusFailed:
+		if job.Release != "" && job.Release != version {
+			return fmt.Errorf("upgrade: %s: incomplete job is for release %s, not %s", d.Name, job.Release, version)
+		}
+		if !opts.Resume {
+			return fmt.Errorf("upgrade: %s: job is %s at stage %s; re-run with --resume", d.Name, job.Status, job.Stage)
+		}
+	case opts.Resume:
+		printer.Skip(d.Name, "nothing to resume")
+		return nil
+	}
+
+	if err := checkDepends(cfg.StateDir, d, version); err != nil {
 		job.Release = version
 		job.Group = d.Group
 		return markFailed(cfg.StateDir, job, err)
@@ -160,8 +182,19 @@ func runDevice(ctx context.Context, cfg *config.Config, version string, d invent
 	}
 	defer r.closeClient()
 
+	start, err := startIndex(job.Stage)
+	if err != nil {
+		return markFailed(cfg.StateDir, job, fmt.Errorf("upgrade: %s: %w", d.Name, err))
+	}
+	// Refresh live facts before package/reboot decisions on resume. Do not probe
+	// while waiting for reconnect — the device may still be down.
+	if pkgIdx, _ := startIndex(StagePackages); start > 0 && start <= pkgIdx {
+		if err := r.discover(); err != nil {
+			return markFailed(cfg.StateDir, job, err)
+		}
+	}
+
 	skippedCurrent := false
-	start := startIndex(job.Stage)
 	for i := start; i < len(stages); i++ {
 		st := stages[i]
 		if r.skipBecauseCurrent(st) {
@@ -183,11 +216,17 @@ func runDevice(ctx context.Context, cfg *config.Config, version string, d invent
 			return err
 		}
 		if err := r.step(st); err != nil {
-			if job.Status == state.StatusComplete {
+			if st == StageComplete {
+				r.job.LastError = redact.String(err.Error())
+				r.job.UpdatedAt = time.Now().UTC()
+				_ = state.Save(r.cfg.StateDir, r.job)
 				return err
 			}
 			if isValidationStage(st) {
 				err = r.maybeDowngrade(err)
+				if r.job.Status == state.StatusComplete {
+					return err
+				}
 			}
 			return markFailed(cfg.StateDir, job, err)
 		}
@@ -283,8 +322,10 @@ func (r *deviceRun) backup() error {
 		return err
 	}
 	r.export = got.Export
+	r.job.ExportPath = got.ExportPath
+	r.job.BackupPath = got.BackupPath
 	r.backedUp = true
-	return nil
+	return state.Save(r.cfg.StateDir, r.job)
 }
 
 func (r *deviceRun) stagePackages() error {
@@ -305,8 +346,12 @@ func (r *deviceRun) stagePackages() error {
 func (r *deviceRun) uploadFiles(version string, files []release.File) error {
 	dir := filepath.Join(r.cfg.PackageDir, version)
 	for _, f := range files {
+		if err := release.VerifyLocalFile(dir, f); err != nil {
+			return fmt.Errorf("upgrade: %s: %w", r.d.Name, err)
+		}
 		local := filepath.Join(dir, f.Name)
 		if err := r.client.Upload(r.ctx, local, f.Name); err != nil {
+			r.closeClient()
 			return fmt.Errorf("upgrade: %s: upload %s: %w", r.d.Name, f.Name, err)
 		}
 	}
@@ -324,6 +369,9 @@ func (r *deviceRun) reboot() error {
 	r.closeClient()
 	if err != nil && r.ctx.Err() != nil {
 		return fmt.Errorf("upgrade: %s: %s: %w", r.d.Name, cmdReboot, r.ctx.Err())
+	}
+	if err != nil && !rosname.IsExpectedDisconnect(err) {
+		return fmt.Errorf("upgrade: %s: %s: %w", r.d.Name, cmdReboot, err)
 	}
 	return nil
 }
@@ -349,7 +397,9 @@ func (r *deviceRun) snapshotBaseline() error {
 }
 
 func (r *deviceRun) skipBecauseCurrent(st string) bool {
-	if st == StageDiscover || st == StageComplete {
+	switch st {
+	case StageDiscover, StageComplete,
+		StageRouterbootUpdate, StageRebootRouterboot, StageValidateAfterRouterboot:
 		return false
 	}
 	facts, err := factsFrom(r.job)
@@ -384,18 +434,32 @@ func (r *deviceRun) firmwareNewer() (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("upgrade: %s: /system routerboard print: %w", r.d.Name, err)
 	}
-	current, upgrade := routerboot.ParseFirmware(out)
-	return routerboot.Newer(upgrade, current), nil
+	current, upgradeFW := routerboot.ParseFirmware(out)
+	return routerboot.Compare(upgradeFW, current)
 }
 
 func (r *deviceRun) routerbootUpdate() error {
 	if err := r.ensureClient(); err != nil {
 		return err
 	}
+	if err := r.ensureBaseline(); err != nil {
+		return err
+	}
 	if _, err := r.client.Run(r.ctx, routerboot.CmdUpgrade); err != nil {
 		return fmt.Errorf("upgrade: %s: %s: %w", r.d.Name, routerboot.CmdUpgrade, err)
 	}
 	return nil
+}
+
+func (r *deviceRun) ensureBaseline() error {
+	dir, err := validate.JobDir(r.cfg, r.d.Name, r.version)
+	if err != nil {
+		return fmt.Errorf("upgrade: %s: %w", r.d.Name, err)
+	}
+	if _, err := validate.ReadBaseline(dir); err == nil {
+		return nil
+	}
+	return r.snapshotBaseline()
 }
 
 func (r *deviceRun) rebootRouterboot() error {
@@ -406,6 +470,9 @@ func (r *deviceRun) rebootRouterboot() error {
 	r.closeClient()
 	if err != nil && r.ctx.Err() != nil {
 		return fmt.Errorf("upgrade: %s: %s: %w", r.d.Name, cmdReboot, r.ctx.Err())
+	}
+	if err != nil && !rosname.IsExpectedDisconnect(err) {
+		return fmt.Errorf("upgrade: %s: %s: %w", r.d.Name, cmdReboot, err)
 	}
 	return nil
 }
@@ -441,10 +508,25 @@ func (r *deviceRun) maybeDowngrade(cause error) error {
 		return cause
 	}
 	r.downgraded = true
+	facts, err := factsFrom(r.job)
+	if err != nil {
+		return fmt.Errorf("%w (downgrade: %v)", cause, err)
+	}
+	prev := facts.Version
 	if err := r.downgradeToPrevious(); err != nil {
 		return fmt.Errorf("%w (downgrade: %v)", cause, err)
 	}
-	return cause
+	// Device is healthy on the previous release; record that so --resume does
+	// not keep validating the abandoned target against a restored box.
+	r.job.Release = prev
+	r.job.Status = state.StatusComplete
+	r.job.Stage = StageComplete
+	r.job.LastError = redact.String(fmt.Sprintf("validation failed after upgrade; restored %s: %v", prev, cause))
+	r.job.UpdatedAt = time.Now().UTC()
+	if err := state.Save(r.cfg.StateDir, r.job); err != nil {
+		return fmt.Errorf("%w (downgrade save: %v)", cause, err)
+	}
+	return fmt.Errorf("%w (restored %s)", cause, prev)
 }
 
 func (r *deviceRun) downgradeToPrevious() error {
@@ -477,6 +559,9 @@ func (r *deviceRun) downgradeToPrevious() error {
 		if err != nil && r.ctx.Err() != nil {
 			return fmt.Errorf("upgrade: %s: %s: %w", r.d.Name, cmdReboot, r.ctx.Err())
 		}
+		if err != nil && !rosname.IsExpectedDisconnect(err) {
+			return fmt.Errorf("upgrade: %s: %s: %w", r.d.Name, cmdReboot, err)
+		}
 		return nil
 	}); err != nil {
 		return err
@@ -507,21 +592,42 @@ func (r *deviceRun) copyBaseline(prev string) error {
 }
 
 func (r *deviceRun) complete() error {
-	r.job.Status = state.StatusComplete
+	export, err := r.exportForAudit()
+	if err != nil {
+		return err
+	}
+	// Stay in_progress until the audit push succeeds so --resume can retry.
+	r.job.Status = state.StatusInProgress
 	r.job.Stage = StageComplete
 	r.job.LastError = ""
 	r.job.UpdatedAt = time.Now().UTC()
 	if err := state.Save(r.cfg.StateDir, r.job); err != nil {
 		return err
 	}
-	if err := r.opts.Push(r.ctx, r.cfg, r.job, r.version, auditgit.Artifacts{
-		Export: r.export,
-		Result: r.job,
+	auditJob := *r.job
+	auditJob.Status = state.StatusComplete
+	if err := r.opts.Push(r.ctx, r.cfg, &auditJob, r.version, auditgit.Artifacts{
+		Export: export,
+		Result: &auditJob,
 		Log:    r.job.Stage,
 	}); err != nil {
 		return fmt.Errorf("upgrade: %s: audit: %w", r.d.Name, err)
 	}
-	return nil
+	r.job.Status = state.StatusComplete
+	r.job.UpdatedAt = time.Now().UTC()
+	return state.Save(r.cfg.StateDir, r.job)
+}
+
+func (r *deviceRun) exportForAudit() (string, error) {
+	if r.export != "" || r.job.ExportPath == "" {
+		return r.export, nil
+	}
+	data, err := os.ReadFile(r.job.ExportPath)
+	if err != nil {
+		return "", fmt.Errorf("upgrade: %s: read export %s: %w", r.d.Name, r.job.ExportPath, err)
+	}
+	r.export = string(data)
+	return r.export, nil
 }
 
 func (r *deviceRun) ensureClient() error {
@@ -534,6 +640,10 @@ func (r *deviceRun) ensureClient() error {
 	}
 	client, err := r.opts.Dial(r.ctx, r.cfg.SSH, r.d.Address, port)
 	if err != nil {
+		return fmt.Errorf("upgrade: %s: %w", r.d.Name, err)
+	}
+	if err := verifyDialIdentity(r.ctx, client, r.d.Name); err != nil {
+		_ = client.Close()
 		return fmt.Errorf("upgrade: %s: %w", r.d.Name, err)
 	}
 	r.client = client
@@ -578,11 +688,17 @@ func waitForReconnect(ctx context.Context, cfg *config.Config, d inventory.Devic
 		}
 		client, err := opts.Dial(ctx, cfg.SSH, d.Address, port)
 		if err == nil {
+			idErr := verifyDialIdentity(ctx, client, d.Name)
 			_ = client.Close()
-			printer.OK()
-			return nil
+			if idErr != nil {
+				last = idErr
+			} else {
+				printer.OK()
+				return nil
+			}
+		} else {
+			last = err
 		}
-		last = err
 		if n == attempts {
 			break
 		}
@@ -614,7 +730,33 @@ func loadOrNew(stateDir string, d inventory.Device) (*state.DeviceJob, error) {
 	return &state.DeviceJob{Device: d.Name, Group: d.Group}, nil
 }
 
-func checkDepends(stateDir string, d inventory.Device) error {
+func verifyDialIdentity(ctx context.Context, client transport.Client, want string) error {
+	out, err := client.Run(ctx, "/system identity print")
+	if err != nil {
+		return err
+	}
+	id := ""
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+		key, val, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(key) == "name" {
+			id = strings.TrimSpace(val)
+			break
+		}
+	}
+	if id == "" {
+		return errors.New("missing identity")
+	}
+	if id != want {
+		return fmt.Errorf("identity %q does not match inventory name %q", id, want)
+	}
+	return nil
+}
+
+func checkDepends(stateDir string, d inventory.Device, version string) error {
 	for _, dep := range d.DependsOn {
 		job, err := state.Load(stateDir, dep)
 		if err != nil {
@@ -623,13 +765,16 @@ func checkDepends(stateDir string, d inventory.Device) error {
 		if job.Status != state.StatusComplete {
 			return fmt.Errorf("upgrade: %s: depends_on %s is %s, want complete", d.Name, dep, job.Status)
 		}
+		if job.Release != version {
+			return fmt.Errorf("upgrade: %s: depends_on %s is complete on %s, want %s", d.Name, dep, job.Release, version)
+		}
 	}
 	return nil
 }
 
 func markFailed(stateDir string, job *state.DeviceJob, cause error) error {
 	job.Status = state.StatusFailed
-	job.LastError = cause.Error()
+	job.LastError = redact.String(cause.Error())
 	job.UpdatedAt = time.Now().UTC()
 	if err := state.Save(stateDir, job); err != nil {
 		return fmt.Errorf("upgrade: save failed state: %v: %w", cause, err)
@@ -677,14 +822,14 @@ func filterGroup(devices []inventory.Device, group string) ([]inventory.Device, 
 	return out, nil
 }
 
-func startIndex(stage string) int {
+func startIndex(stage string) (int, error) {
 	if stage == "" {
-		return 0
+		return 0, nil
 	}
 	for i, s := range stages {
 		if s == stage {
-			return i
+			return i, nil
 		}
 	}
-	return 0
+	return 0, fmt.Errorf("unknown stage %q; refuse to resume", stage)
 }

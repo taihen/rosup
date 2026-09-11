@@ -11,6 +11,7 @@ import (
 
 	"github.com/taihen/rosup/internal/config"
 	"github.com/taihen/rosup/internal/redact"
+	"github.com/taihen/rosup/internal/rosname"
 	"github.com/taihen/rosup/internal/state"
 	"github.com/taihen/rosup/internal/transport"
 )
@@ -19,10 +20,12 @@ const (
 	cmdExport       = "/export hide-sensitive"
 	backupTimeFmt   = "20060102T150405Z"
 	remoteBackupExt = ".backup"
+	exportExt       = ".rsc"
 )
 
 type Result struct {
 	Export     string
+	ExportPath string
 	BackupPath string
 }
 
@@ -32,6 +35,9 @@ func ExportAndBackup(ctx context.Context, cfg *config.Config, device string, cli
 	}
 	if client == nil {
 		return Result{}, errors.New("backup: nil client")
+	}
+	if err := rosname.Check("backup: device name", device); err != nil {
+		return Result{}, err
 	}
 
 	dir, err := deviceBackupDir(cfg.BackupDir, device)
@@ -51,6 +57,9 @@ func ExportAndBackup(ctx context.Context, cfg *config.Config, device string, cli
 
 	now := time.Now().UTC()
 	name := "rosup-" + device + "-" + now.Format(backupTimeFmt)
+	if err := rosname.Check("backup: remote name", name); err != nil {
+		return Result{}, err
+	}
 	save := "/system backup save name=" + name + " dont-encrypt=yes"
 	if _, err := client.Run(ctx, save); err != nil {
 		return Result{}, fmt.Errorf("backup: %s: %s: %w", device, save, err)
@@ -69,12 +78,22 @@ func ExportAndBackup(ctx context.Context, cfg *config.Config, device string, cli
 	if err := client.Remove(ctx, remote); err != nil {
 		return Result{}, fmt.Errorf("backup: %s: remove %s: %w", device, remote, err)
 	}
+
+	exportPath := filepath.Join(dir, name+exportExt)
+	if err := os.WriteFile(exportPath, []byte(export), 0o600); err != nil {
+		return Result{}, fmt.Errorf("backup: %s: write %s: %w", device, exportPath, err)
+	}
+	if err := os.Chmod(exportPath, 0o600); err != nil {
+		return Result{}, fmt.Errorf("backup: %s: chmod %s: %w", device, exportPath, err)
+	}
+
 	if err := prune(dir, device, now, cfg.BackupRetentionDays); err != nil {
 		return Result{}, err
 	}
 
 	return Result{
 		Export:     export,
+		ExportPath: exportPath,
 		BackupPath: local,
 	}, nil
 }
@@ -125,10 +144,11 @@ func prune(dir, device string, now time.Time, retentionDays int) error {
 
 func parseBackupTime(device, filename string) (time.Time, bool) {
 	base := filepath.Base(filename)
-	if filepath.Ext(base) != remoteBackupExt {
+	ext := filepath.Ext(base)
+	if ext != remoteBackupExt && ext != exportExt {
 		return time.Time{}, false
 	}
-	stem := strings.TrimSuffix(base, remoteBackupExt)
+	stem := strings.TrimSuffix(base, ext)
 	prefix := "rosup-" + device + "-"
 	if !strings.HasPrefix(stem, prefix) {
 		return time.Time{}, false
@@ -148,6 +168,9 @@ func Restore(ctx context.Context, device string, client transport.Client, localP
 	if client == nil {
 		return errors.New("backup: nil client")
 	}
+	if err := rosname.Check("backup: device name", device); err != nil {
+		return err
+	}
 	if filepath.Ext(localPath) != remoteBackupExt {
 		return fmt.Errorf("backup: restore file must be a %s file", remoteBackupExt)
 	}
@@ -158,10 +181,13 @@ func Restore(ctx context.Context, device string, client transport.Client, localP
 	if remote == "" || remote == "." || remote == string(filepath.Separator) {
 		return fmt.Errorf("backup: invalid restore path %q", localPath)
 	}
+	stem := strings.TrimSuffix(remote, remoteBackupExt)
+	if err := rosname.Check("backup: restore name", stem); err != nil {
+		return err
+	}
 	if err := client.Upload(ctx, localPath, remote); err != nil {
 		return fmt.Errorf("backup: %s: upload %s: %w", device, remote, err)
 	}
-	stem := strings.TrimSuffix(remote, remoteBackupExt)
 	cmd := "/system backup load name=" + stem
 	if _, err := client.Run(ctx, cmd); err != nil {
 		return fmt.Errorf("backup: %s: %s: %w", device, cmd, err)

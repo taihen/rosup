@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 
 	"github.com/spf13/cobra"
@@ -37,7 +38,14 @@ func runRollback(cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = unlock() }()
 
-	return upgrade.Rollback(cmd.Context(), cfg, args[0], toVersion, upgrade.Options{
+	ctx := cmd.Context()
+	if cfg.UpgradeTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, cfg.UpgradeTimeout)
+		defer cancel()
+	}
+
+	return upgrade.Rollback(ctx, cfg, args[0], toVersion, upgrade.Options{
 		Dial: transport.Dial,
 	})
 }

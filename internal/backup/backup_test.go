@@ -178,6 +178,32 @@ func TestExportAndBackupWritesBinaryUnderDeviceDir(t *testing.T) {
 	if string(data) != "binary-backup" {
 		t.Fatalf("backup content %q", data)
 	}
+	if got.ExportPath == "" {
+		t.Fatal("empty ExportPath")
+	}
+	if filepath.Dir(got.ExportPath) != wantDir {
+		t.Fatalf("export path %q not under %q", got.ExportPath, wantDir)
+	}
+	if filepath.Ext(got.ExportPath) != ".rsc" {
+		t.Fatalf("export path %q", got.ExportPath)
+	}
+	if strings.TrimSuffix(filepath.Base(got.BackupPath), ".backup") != strings.TrimSuffix(filepath.Base(got.ExportPath), ".rsc") {
+		t.Fatalf("export stem mismatch: backup %q export %q", got.BackupPath, got.ExportPath)
+	}
+	exportData, err := os.ReadFile(got.ExportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(exportData) != got.Export {
+		t.Fatalf("export file %q want %q", exportData, got.Export)
+	}
+	fi, err = os.Stat(got.ExportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("export file perm %04o", perm)
+	}
 
 	var save string
 	for _, c := range client.runs {
@@ -361,7 +387,7 @@ func TestExportAndBackupRejectsUnsafeDeviceNames(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected error")
 			}
-			if !strings.Contains(err.Error(), "invalid device") {
+			if !strings.Contains(err.Error(), "invalid device") && !strings.Contains(err.Error(), "must match") {
 				t.Fatalf("got %v", err)
 			}
 			escaped := filepath.Join(root, "x.backup")

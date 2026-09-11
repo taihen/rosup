@@ -11,6 +11,7 @@ func TestNewer(t *testing.T) {
 		upgrade string
 		current string
 		want    bool
+		wantErr bool
 	}{
 		{upgrade: "6.49.18", current: "6.49.18", want: false},
 		{upgrade: "6.49.18 (long-term)", current: "6.49.18", want: false},
@@ -19,14 +20,27 @@ func TestNewer(t *testing.T) {
 		{upgrade: "6.49.13", current: "6.49.18", want: false},
 		{upgrade: "6.49.18", current: "6.48.6", want: true},
 		{upgrade: "7.1", current: "6.49.18", want: true},
-		{upgrade: "", current: "6.49.18", want: false},
-		{upgrade: "6.49.21", current: "", want: false},
-		{upgrade: "not-a-version", current: "also-bad", want: false},
+		{upgrade: "", current: "6.49.18", wantErr: true},
+		{upgrade: "6.49.21", current: "", wantErr: true},
+		{upgrade: "not-a-version", current: "also-bad", wantErr: true},
 	}
 	for _, tc := range tests {
-		got := routerboot.Newer(tc.upgrade, tc.current)
+		got, err := routerboot.Compare(tc.upgrade, tc.current)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("Compare(%q, %q) want error", tc.upgrade, tc.current)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("Compare(%q, %q) unexpected err %v", tc.upgrade, tc.current, err)
+			continue
+		}
 		if got != tc.want {
-			t.Errorf("Newer(%q, %q) = %v, want %v", tc.upgrade, tc.current, got, tc.want)
+			t.Errorf("Compare(%q, %q) = %v, want %v", tc.upgrade, tc.current, got, tc.want)
+		}
+		if routerboot.Newer(tc.upgrade, tc.current) != tc.want {
+			t.Errorf("Newer(%q, %q) mismatch", tc.upgrade, tc.current)
 		}
 	}
 }

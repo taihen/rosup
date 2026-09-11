@@ -139,6 +139,9 @@ func probe(ctx context.Context, cfg *config.Config, d inventory.Device, dial Dia
 	if err != nil {
 		return Facts{}, fmt.Errorf("discover: %s: %w", d.Name, err)
 	}
+	if err := MatchInventory(facts, d.Name); err != nil {
+		return Facts{}, fmt.Errorf("discover: %s: %w", d.Name, err)
+	}
 	return facts, nil
 }
 

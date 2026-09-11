@@ -3,6 +3,8 @@ package upgrade_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -281,7 +283,7 @@ func TestCompleteSameReleaseSkipsSecondUpgrade(t *testing.T) {
 	}
 }
 
-func TestAlreadyOnReleaseSkipsPackagesRebootAndRouterBOOT(t *testing.T) {
+func TestAlreadyOnReleaseSkipsPackagesButUpdatesRouterBOOT(t *testing.T) {
 	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
 	sim := world.sim("router-01")
 	sim.version = target
@@ -302,11 +304,14 @@ func TestAlreadyOnReleaseSkipsPackagesRebootAndRouterBOOT(t *testing.T) {
 	if len(sim.uploads) != 0 {
 		t.Fatalf("uploaded %v", sim.uploads)
 	}
-	if sim.reboots != 0 {
-		t.Fatalf("reboots %d", sim.reboots)
+	if !contains(sim.runs, "/system routerboard upgrade") {
+		t.Fatal("RouterBOOT upgrade should run when firmware is stale")
 	}
-	if contains(sim.runs, "/system routerboard upgrade") {
-		t.Fatal("RouterBOOT upgrade ran on current release")
+	if sim.reboots != 1 {
+		t.Fatalf("reboots %d, want 1 for RouterBOOT", sim.reboots)
+	}
+	if sim.currentFirmware != "6.49.21" {
+		t.Fatalf("firmware %q", sim.currentFirmware)
 	}
 	if contains(sim.runs, "/export hide-sensitive") {
 		t.Fatal("backup ran on current release")
@@ -323,7 +328,7 @@ func TestAlreadyOnReleaseDoesNotBlockLaterDevices(t *testing.T) {
 	)
 	first := world.sim("router-01")
 	first.version = target
-	first.currentFirmware = "6.45.8"
+	first.currentFirmware = "6.49.21"
 	first.upgradeFirmware = "6.49.21"
 
 	if err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts()); err != nil {
@@ -350,7 +355,7 @@ func TestAlreadyOnReleasePlainProgress(t *testing.T) {
 	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
 	sim := world.sim("router-01")
 	sim.version = target
-	sim.currentFirmware = "6.45.8"
+	sim.currentFirmware = "6.49.21"
 	sim.upgradeFirmware = "6.49.21"
 	var buf bytes.Buffer
 	opts := world.opts()
@@ -452,6 +457,7 @@ func TestReconnectTimeoutPlainProgress(t *testing.T) {
 	var buf bytes.Buffer
 	opts := world.opts()
 	opts.Out = &buf
+	opts.Resume = true
 
 	err := upgrade.Run(context.Background(), cfg, target, "core-a", opts)
 	if err == nil {
@@ -511,7 +517,9 @@ func TestResumeFromStage(t *testing.T) {
 				writeJobBaseline(t, cfg, "router-01", sampleFacts(current))
 			}
 
-			if err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts()); err != nil {
+			opts := world.opts()
+			opts.Resume = true
+			if err := upgrade.Run(context.Background(), cfg, target, "core-a", opts); err != nil {
 				t.Fatal(err)
 			}
 
@@ -538,6 +546,242 @@ func TestResumeFromStage(t *testing.T) {
 				t.Fatalf("rebooted from %s", tc.stage)
 			}
 		})
+	}
+}
+
+func TestIncompleteJobRequiresResume(t *testing.T) {
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	job := &state.DeviceJob{
+		Device:  "router-01",
+		Release: target,
+		Group:   "core-a",
+		Stage:   upgrade.StagePackages,
+		Status:  state.StatusFailed,
+		Facts:   factsJSON(t, sampleFacts(current)),
+	}
+	if err := state.Save(cfg.StateDir, job); err != nil {
+		t.Fatal(err)
+	}
+
+	err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "--resume") {
+		t.Fatalf("got %v", err)
+	}
+	if world.dialCount() != 0 {
+		t.Fatalf("dialed %d times", world.dialCount())
+	}
+}
+
+func TestResumeRefusesCrossRelease(t *testing.T) {
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	job := &state.DeviceJob{
+		Device:  "router-01",
+		Release: current,
+		Group:   "core-a",
+		Stage:   upgrade.StagePackages,
+		Status:  state.StatusInProgress,
+		Facts:   factsJSON(t, sampleFacts(current)),
+	}
+	if err := state.Save(cfg.StateDir, job); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := world.opts()
+	opts.Resume = true
+	err := upgrade.Run(context.Background(), cfg, target, "core-a", opts)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), current) || !strings.Contains(err.Error(), target) {
+		t.Fatalf("got %v", err)
+	}
+	got, err := state.Load(cfg.StateDir, "router-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Release != current {
+		t.Fatalf("release overwritten to %q", got.Release)
+	}
+	if got.Stage != upgrade.StagePackages {
+		t.Fatalf("stage %q", got.Stage)
+	}
+	if world.dialCount() != 0 {
+		t.Fatalf("dialed %d times", world.dialCount())
+	}
+}
+
+func TestResumeSkipsPendingDevices(t *testing.T) {
+	cfg, world := setup(t,
+		device("router-01", "core-a", 10, nil),
+		device("router-02", "core-a", 20, nil),
+	)
+	job := &state.DeviceJob{
+		Device:  "router-01",
+		Release: target,
+		Group:   "core-a",
+		Stage:   upgrade.StageWaitForReconnect,
+		Status:  state.StatusFailed,
+		Facts:   factsJSON(t, sampleFacts(current)),
+	}
+	if err := state.Save(cfg.StateDir, job); err != nil {
+		t.Fatal(err)
+	}
+	pending := &state.DeviceJob{
+		Device:  "router-02",
+		Release: target,
+		Group:   "core-a",
+		Status:  state.StatusPending,
+	}
+	if err := state.Save(cfg.StateDir, pending); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(cfg.StateDir, "router-02.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sim := world.sim("router-01")
+	sim.version = target
+	sim.rebooted = true
+	writeJobBaseline(t, cfg, "router-01", sampleFacts(current))
+
+	opts := world.opts()
+	opts.Resume = true
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", opts); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := state.Load(cfg.StateDir, "router-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != state.StatusComplete {
+		t.Fatalf("status %q", got.Status)
+	}
+	after, err := os.ReadFile(filepath.Join(cfg.StateDir, "router-02.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatalf("pending job changed:\nbefore %s\nafter %s", before, after)
+	}
+	if world.lookups["192.0.2.2"] != 0 {
+		t.Fatalf("dialed pending device %d times", world.lookups["192.0.2.2"])
+	}
+}
+
+func TestResumeUsesPersistedExportForAudit(t *testing.T) {
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	exportPath := filepath.Join(cfg.BackupDir, "router-01", "rosup-router-01-20260908T120000Z.rsc")
+	if err := os.MkdirAll(filepath.Dir(exportPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const exportBody = "/ip address print\n"
+	if err := os.WriteFile(exportPath, []byte(exportBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	job := &state.DeviceJob{
+		Device:     "router-01",
+		Release:    target,
+		Group:      "core-a",
+		Stage:      upgrade.StageComplete,
+		Status:     state.StatusInProgress,
+		Facts:      factsJSON(t, sampleFacts(current)),
+		ExportPath: exportPath,
+	}
+	if err := state.Save(cfg.StateDir, job); err != nil {
+		t.Fatal(err)
+	}
+	sim := world.sim("router-01")
+	sim.version = target
+	sim.rebooted = true
+	writeJobBaseline(t, cfg, "router-01", sampleFacts(current))
+
+	var pushed string
+	opts := world.opts()
+	opts.Resume = true
+	opts.Push = func(_ context.Context, _ *config.Config, _ *state.DeviceJob, _ string, artifacts auditgit.Artifacts) error {
+		pushed = artifacts.Export
+		return nil
+	}
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", opts); err != nil {
+		t.Fatal(err)
+	}
+	if pushed != exportBody {
+		t.Fatalf("audit export %q", pushed)
+	}
+}
+
+func TestInProgressJobRequiresResume(t *testing.T) {
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	job := &state.DeviceJob{
+		Device:  "router-01",
+		Release: target,
+		Group:   "core-a",
+		Stage:   upgrade.StagePackages,
+		Status:  state.StatusInProgress,
+		Facts:   factsJSON(t, sampleFacts(current)),
+	}
+	if err := state.Save(cfg.StateDir, job); err != nil {
+		t.Fatal(err)
+	}
+
+	err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "--resume") {
+		t.Fatalf("got %v", err)
+	}
+	if world.dialCount() != 0 {
+		t.Fatalf("dialed %d times", world.dialCount())
+	}
+}
+
+func TestMissingExportKeepsJobResumable(t *testing.T) {
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	exportPath := filepath.Join(cfg.BackupDir, "router-01", "missing.rsc")
+	job := &state.DeviceJob{
+		Device:     "router-01",
+		Release:    target,
+		Group:      "core-a",
+		Stage:      upgrade.StageComplete,
+		Status:     state.StatusInProgress,
+		Facts:      factsJSON(t, sampleFacts(current)),
+		ExportPath: exportPath,
+	}
+	if err := state.Save(cfg.StateDir, job); err != nil {
+		t.Fatal(err)
+	}
+	sim := world.sim("router-01")
+	sim.version = target
+	sim.rebooted = true
+	writeJobBaseline(t, cfg, "router-01", sampleFacts(current))
+
+	opts := world.opts()
+	opts.Resume = true
+	err := upgrade.Run(context.Background(), cfg, target, "core-a", opts)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "read export") {
+		t.Fatalf("got %v", err)
+	}
+
+	got, err := state.Load(cfg.StateDir, "router-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != state.StatusInProgress {
+		t.Fatalf("status %q, want in_progress so --resume can retry", got.Status)
+	}
+	if got.Stage != upgrade.StageComplete {
+		t.Fatalf("stage %q", got.Stage)
+	}
+	if got.LastError == "" {
+		t.Fatal("expected last_error for missing export")
 	}
 }
 
@@ -623,7 +867,9 @@ func TestReconnectTimeoutMarksFailedWithoutDowngrade(t *testing.T) {
 	writeJobBaseline(t, cfg, "router-01", sampleFacts(current))
 	world.clock.jump = cfg.Reconnect.Timeout
 
-	err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts())
+	opts := world.opts()
+	opts.Resume = true
+	err := upgrade.Run(context.Background(), cfg, target, "core-a", opts)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -672,7 +918,7 @@ func TestReconnectSucceedsOnThirdAttempt(t *testing.T) {
 	}
 }
 
-func TestAuditPushFailureDoesNotUncomplete(t *testing.T) {
+func TestAuditPushFailureLeavesResumable(t *testing.T) {
 	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
 	opts := world.opts()
 	opts.Push = func(context.Context, *config.Config, *state.DeviceJob, string, auditgit.Artifacts) error {
@@ -691,11 +937,24 @@ func TestAuditPushFailureDoesNotUncomplete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if job.Status != state.StatusComplete {
+	if job.Status != state.StatusInProgress {
 		t.Fatalf("status %q", job.Status)
 	}
 	if job.Stage != upgrade.StageComplete {
 		t.Fatalf("stage %q", job.Stage)
+	}
+
+	opts.Push = nopPush
+	opts.Resume = true
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", opts); err != nil {
+		t.Fatal(err)
+	}
+	job, err = state.Load(cfg.StateDir, "router-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != state.StatusComplete {
+		t.Fatalf("status after resume %q", job.Status)
 	}
 }
 
@@ -739,11 +998,17 @@ func TestGuardedDowngradeOnValidationFailureWhenSSHUp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if job.Status != state.StatusFailed {
+	if job.Status != state.StatusComplete {
 		t.Fatalf("status %q", job.Status)
 	}
-	if job.Stage != upgrade.StageValidateRole {
+	if job.Release != current {
+		t.Fatalf("release %q, want restored %s", job.Release, current)
+	}
+	if job.Stage != upgrade.StageComplete {
 		t.Fatalf("stage %q", job.Stage)
+	}
+	if !strings.Contains(job.LastError, "restored") && !strings.Contains(job.LastError, "validation failed") {
+		t.Fatalf("last_error %q", job.LastError)
 	}
 
 	var prev []string
@@ -1072,6 +1337,15 @@ func writeRelease(t *testing.T, cfg *config.Config, version string, files []rele
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	for i, f := range files {
+		body := []byte("npk")
+		if err := os.WriteFile(filepath.Join(dir, f.Name), body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(body)
+		files[i].SHA256 = hex.EncodeToString(sum[:])
+		files[i].Size = int64(len(body))
+	}
 	man := release.Manifest{
 		Version:       version,
 		Channel:       "long-term",
@@ -1085,11 +1359,6 @@ func writeRelease(t *testing.T, cfg *config.Config, version string, files []rele
 	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range files {
-		if err := os.WriteFile(filepath.Join(dir, f.Name), []byte("npk"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
 }
 
 func writeExtraNPK(t *testing.T, cfg *config.Config, version string, f release.File) {
@@ -1098,16 +1367,20 @@ func writeExtraNPK(t *testing.T, cfg *config.Config, version string, f release.F
 	if err != nil {
 		t.Fatal(err)
 	}
+	body := []byte("npk")
+	dir := filepath.Join(cfg.PackageDir, version)
+	if err := os.WriteFile(filepath.Join(dir, f.Name), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(body)
+	f.SHA256 = hex.EncodeToString(sum[:])
+	f.Size = int64(len(body))
 	man.Files = append(man.Files, f)
 	raw, err := json.Marshal(man)
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(cfg.PackageDir, version)
 	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, f.Name), []byte("npk"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -288,7 +288,13 @@ func checkAfterWait(ctx context.Context, req Request, profileName string, profil
 	if facts.Version != req.Target {
 		return fmt.Errorf("validate: %s: version %s, want %s", req.Device.Name, facts.Version, req.Target)
 	}
+	if err := discover.MatchInventory(facts, req.Device.Name); err != nil {
+		return fmt.Errorf("validate: %s: %w", req.Device.Name, err)
+	}
 	if err := checkPackages(req.Device.Name, baseline.Packages, facts.Packages); err != nil {
+		return err
+	}
+	if err := checkPackageVersions(req.Device.Name, req.Target, facts.Packages); err != nil {
 		return err
 	}
 	if err := checkFirmware(req.Device.Name, facts.CurrentFirmware, facts.UpgradeFirmware, req.UpgradeFirmware); err != nil {
@@ -370,6 +376,15 @@ func checkPackages(device string, want, have []discover.Package) error {
 	default:
 		return fmt.Errorf("validate: %s: extra packages: %s", device, strings.Join(extra, ", "))
 	}
+}
+
+func checkPackageVersions(device, target string, have []discover.Package) error {
+	for _, p := range have {
+		if p.Version != target {
+			return fmt.Errorf("validate: %s: package %s version %s, want %s", device, p.Name, p.Version, target)
+		}
+	}
+	return nil
 }
 
 func packageNames(pkgs []discover.Package) []string {

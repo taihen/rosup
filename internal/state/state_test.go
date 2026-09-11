@@ -126,6 +126,9 @@ func TestMarkStartedSetsInProgress(t *testing.T) {
 	if job.Status != state.StatusInProgress {
 		t.Fatalf("in-memory status %q", job.Status)
 	}
+	if job.LastError != "" {
+		t.Fatalf("in-memory LastError %q", job.LastError)
+	}
 
 	got, err := state.Load(dir, job.Device)
 	if err != nil {
@@ -133,6 +136,36 @@ func TestMarkStartedSetsInProgress(t *testing.T) {
 	}
 	if got.Status != state.StatusInProgress {
 		t.Fatalf("on-disk status %q", got.Status)
+	}
+	if got.LastError != "" {
+		t.Fatalf("on-disk LastError %q", got.LastError)
+	}
+}
+
+func TestMarkStartedClearsLastError(t *testing.T) {
+	dir := t.TempDir()
+	job := sampleJob(state.StatusFailed)
+	job.LastError = "ssh down"
+	if err := state.Save(dir, job); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := state.MarkStarted(dir, job); err != nil {
+		t.Fatal(err)
+	}
+	if job.LastError != "" {
+		t.Fatalf("in-memory LastError %q", job.LastError)
+	}
+
+	got, err := state.Load(dir, job.Device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != state.StatusInProgress {
+		t.Fatalf("status %q", got.Status)
+	}
+	if got.LastError != "" {
+		t.Fatalf("LastError %q", got.LastError)
 	}
 }
 
@@ -218,6 +251,61 @@ func TestSaveAllowsTransitionToComplete(t *testing.T) {
 	}
 	if got.Stage != "COMPLETE" {
 		t.Fatalf("stage %q", got.Stage)
+	}
+}
+
+func TestSaveAllowsNewReleaseAfterComplete(t *testing.T) {
+	dir := t.TempDir()
+	complete := sampleJob(state.StatusComplete)
+	complete.Release = "6.49.18"
+	complete.Stage = "COMPLETE"
+	if err := state.Save(dir, complete); err != nil {
+		t.Fatal(err)
+	}
+
+	next := sampleJob(state.StatusInProgress)
+	next.Release = "6.49.21"
+	next.Stage = "DISCOVER"
+	if err := state.Save(dir, next); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := state.Load(dir, "golem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != state.StatusInProgress || got.Release != "6.49.21" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestListSkipsCorruptFiles(t *testing.T) {
+	dir := t.TempDir()
+	ok := sampleJob(state.StatusComplete)
+	if err := state.Save(dir, ok); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "broken.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := state.List(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("%+v", got)
+	}
+	var sawOK, sawCorrupt bool
+	for _, j := range got {
+		switch j.Device {
+		case "golem":
+			sawOK = true
+		case "broken":
+			sawCorrupt = j.Status == "corrupt"
+		}
+	}
+	if !sawOK || !sawCorrupt {
+		t.Fatalf("%+v", got)
 	}
 }
 
@@ -414,6 +502,64 @@ func TestEnsureSecureDirTightensExisting(t *testing.T) {
 	}
 	if perm := fi.Mode().Perm(); perm != 0o700 {
 		t.Fatalf("perm %04o", perm)
+	}
+}
+
+func TestListLoadsJobsSorted(t *testing.T) {
+	dir := t.TempDir()
+	jobs := []*state.DeviceJob{
+		{
+			Device:  "zebra",
+			Group:   "b",
+			Release: "6.49.21",
+			Status:  state.StatusPending,
+		},
+		{
+			Device:  "alpha",
+			Group:   "a",
+			Release: "6.49.21",
+			Status:  state.StatusFailed,
+			Stage:   "PREFLIGHT",
+		},
+		{
+			Device:  "beta",
+			Group:   "a",
+			Release: "6.49.18",
+			Status:  state.StatusComplete,
+			Stage:   "COMPLETE",
+		},
+	}
+	for _, job := range jobs {
+		if err := state.Save(dir, job); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "rosup.lock"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := state.List(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("len %d", len(got))
+	}
+	want := []string{"alpha", "beta", "zebra"}
+	for i, name := range want {
+		if got[i].Device != name {
+			t.Fatalf("got[%d]=%q want %q", i, got[i].Device, name)
+		}
+	}
+}
+
+func TestListMissingDir(t *testing.T) {
+	got, err := state.List(filepath.Join(t.TempDir(), "missing"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %d", len(got))
 	}
 }
 
