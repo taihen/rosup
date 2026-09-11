@@ -24,7 +24,7 @@ func InstallErrors(output string) error {
 		install = append(install, line)
 	}
 	if len(install) == 0 {
-		return fmt.Errorf("no install lines in system log")
+		return nil
 	}
 	lastTime := install[len(install)-1].Time
 	for _, line := range install {
