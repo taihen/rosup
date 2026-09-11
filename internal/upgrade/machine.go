@@ -152,6 +152,9 @@ func runDevice(ctx context.Context, cfg *config.Config, version string, d invent
 	start := startIndex(job.Stage)
 	for i := start; i < len(stages); i++ {
 		st := stages[i]
+		if r.skipBecauseCurrent(st) {
+			continue
+		}
 		if skip, err := r.skipRouterbootStage(st); err != nil {
 			return markFailed(cfg.StateDir, job, err)
 		} else if skip {
@@ -322,6 +325,17 @@ func (r *deviceRun) waitReconnect() error {
 
 func (r *deviceRun) validateRole() error {
 	return r.checkRoleAt(r.version, false)
+}
+
+func (r *deviceRun) skipBecauseCurrent(st string) bool {
+	if st == StageDiscover || st == StageComplete {
+		return false
+	}
+	facts, err := factsFrom(r.job)
+	if err != nil {
+		return false
+	}
+	return preflight.AlreadyOnRelease(facts, r.version)
 }
 
 func (r *deviceRun) skipRouterbootStage(st string) (bool, error) {

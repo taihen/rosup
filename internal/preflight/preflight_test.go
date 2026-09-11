@@ -146,6 +146,17 @@ func TestCheckInsufficientFreeDisk(t *testing.T) {
 	}
 }
 
+func TestCheckSkipsDiskWhenAlreadyOnRelease(t *testing.T) {
+	facts := armFacts("6.49.21", "100B", "routeros", "wireless")
+	man := manifest(
+		npk("routeros", "arm", 3<<20),
+		npk("wireless", "arm", 2<<20),
+	)
+	if err := preflight.Check(facts, man); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCheckRejectsROS7(t *testing.T) {
 	facts := armFacts("7.11.2", "4212.0KiB", "routeros", "wireless")
 	man := manifest(

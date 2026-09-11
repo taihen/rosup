@@ -14,12 +14,19 @@ const diskMarginBytes int64 = 1 << 20
 
 var sizeRe = regexp.MustCompile(`(?i)^([0-9]+(?:\.[0-9]+)?)\s*(b|kib|mib|gib|tib)?$`)
 
+func AlreadyOnRelease(facts discover.Facts, version string) bool {
+	return facts.Version != "" && facts.Version == version
+}
+
 func Check(facts discover.Facts, man release.Manifest) error {
 	if err := rejectROS7(facts.Version); err != nil {
 		return err
 	}
 	if err := rejectROS7(man.Version); err != nil {
 		return err
+	}
+	if AlreadyOnRelease(facts, man.Version) {
+		return nil
 	}
 
 	byPkg := release.IndexByInstalledName(man.Files, facts.ArchitectureName)
