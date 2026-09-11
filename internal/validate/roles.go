@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/taihen/rosup/internal/progress"
 	"github.com/taihen/rosup/internal/transport"
 )
 
@@ -15,8 +16,9 @@ var RoleCaptures = map[string]CaptureFunc{}
 type roleCtxKey struct{}
 
 type roleMeta struct {
-	clock   Clock
-	profile Profile
+	clock    Clock
+	profile  Profile
+	progress *progress.Printer
 }
 
 func init() {
@@ -47,14 +49,21 @@ func CaptureRoleFacts(ctx context.Context, client transport.Client, role string)
 	return raw, nil
 }
 
-func withRoleMeta(ctx context.Context, clock Clock, profile Profile) context.Context {
+func withRoleMeta(ctx context.Context, clock Clock, profile Profile, printer *progress.Printer) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if clock == nil {
 		clock = realClock{}
 	}
-	return context.WithValue(ctx, roleCtxKey{}, roleMeta{clock: clock, profile: profile})
+	return context.WithValue(ctx, roleCtxKey{}, roleMeta{clock: clock, profile: profile, progress: printer})
+}
+
+func roleProgress(ctx context.Context) *progress.Printer {
+	if m, ok := ctx.Value(roleCtxKey{}).(roleMeta); ok {
+		return m.progress
+	}
+	return nil
 }
 
 func roleClock(ctx context.Context) Clock {

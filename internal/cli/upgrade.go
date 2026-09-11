@@ -43,5 +43,6 @@ func runUpgrade(cmd *cobra.Command, _ []string) error {
 
 	return upgrade.Run(cmd.Context(), cfg, version, group, upgrade.Options{
 		Dial: transport.Dial,
+		Out:  cmd.OutOrStdout(),
 	})
 }

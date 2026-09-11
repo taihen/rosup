@@ -26,13 +26,7 @@ func Verify(ctx context.Context, req Request) error {
 		req.Clock = realClock{}
 	}
 
-	profileName := req.Profile
-	if profileName == "" {
-		profileName = req.Device.ValidationProfile
-	}
-	if profileName == "" {
-		profileName = req.Device.Role
-	}
+	profileName := resolveProfile(req)
 
 	dir, err := lastBaselineDir(req.Config, req.Device.Name)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -43,10 +37,13 @@ func Verify(ctx context.Context, req Request) error {
 		return Check(ctx, req)
 	}
 
+	req.Progress.Start(req.Device.Name, "saving baseline")
 	target, err := snapshotNow(ctx, req, profileName)
 	if err != nil {
+		req.Progress.Fail()
 		return err
 	}
+	req.Progress.OK()
 	req.Target = target
 	return Check(ctx, req)
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/taihen/rosup/internal/discover"
+	"github.com/taihen/rosup/internal/progress"
 	"github.com/taihen/rosup/internal/transport"
 )
 
@@ -59,6 +60,7 @@ func checkPPPoE(ctx context.Context, client transport.Client, baseline Baseline,
 	clock := roleClock(ctx)
 	timeout := roleProfile(ctx).SessionRestoreTimeout
 	if timeout > 0 {
+		roleProgress(ctx).Update("waiting for PPPoE sessions (" + progress.FormatDuration(timeout) + ")")
 		clock.Sleep(timeout)
 		have, err = readPPPoE(ctx, client)
 		if err != nil {
