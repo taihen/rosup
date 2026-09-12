@@ -48,7 +48,7 @@ func runPlan(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	if err := plan.Format(cmd.OutOrStdout(), report); err != nil {
+	if err := plan.WriteReport(cmd.OutOrStdout(), report); err != nil {
 		return err
 	}
 	return plan.Failure(report)
