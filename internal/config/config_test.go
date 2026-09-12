@@ -97,6 +97,9 @@ func TestLoadOpsDefaults(t *testing.T) {
 	if cfg.Ops.AuditDir != "audit" {
 		t.Fatalf("audit dir %q", cfg.Ops.AuditDir)
 	}
+	if cfg.Ops.BackupsDir != "backups" {
+		t.Fatalf("backups dir %q", cfg.Ops.BackupsDir)
+	}
 	if cfg.Ops.SSHPrivateKeyPath != "" {
 		t.Fatalf("ops.ssh_private_key_path %q, want empty", cfg.Ops.SSHPrivateKeyPath)
 	}

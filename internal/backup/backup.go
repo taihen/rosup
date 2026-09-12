@@ -27,6 +27,7 @@ type Result struct {
 	Export     string
 	ExportPath string
 	BackupPath string
+	Time       time.Time
 }
 
 func ExportAndBackup(ctx context.Context, cfg *config.Config, device string, client transport.Client) (Result, error) {
@@ -95,6 +96,7 @@ func ExportAndBackup(ctx context.Context, cfg *config.Config, device string, cli
 		Export:     export,
 		ExportPath: exportPath,
 		BackupPath: local,
+		Time:       now,
 	}, nil
 }
 

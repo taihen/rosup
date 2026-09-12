@@ -18,6 +18,7 @@ const (
 	defaultReconnectAttempts   = 3
 	defaultOpsInventoryFile    = "inventory/devices.yaml"
 	defaultOpsAuditDir         = "audit"
+	defaultOpsBackupsDir       = "backups"
 	defaultConfigPath          = "./rosup.yaml"
 )
 
@@ -45,6 +46,7 @@ type OpsConfig struct {
 	Remote            string `yaml:"remote"`
 	InventoryFile     string `yaml:"inventory_file"`       // default "inventory/devices.yaml"
 	AuditDir          string `yaml:"audit_dir"`            // default "audit"
+	BackupsDir        string `yaml:"backups_dir"`          // default "backups"
 	SSHPrivateKeyPath string `yaml:"ssh_private_key_path"` // deploy key for ops git, not RouterOS
 	GitKnownHostsPath string `yaml:"git_known_hosts_path"` // GitHub host keys; NEVER the RouterOS TOFU file
 }
@@ -174,6 +176,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Ops.AuditDir == "" {
 		cfg.Ops.AuditDir = defaultOpsAuditDir
+	}
+	if cfg.Ops.BackupsDir == "" {
+		cfg.Ops.BackupsDir = defaultOpsBackupsDir
 	}
 }
 
