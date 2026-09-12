@@ -220,12 +220,34 @@ func TestCheckRejectsROS7Typed(t *testing.T) {
 
 func TestCheckSkipsDiskWhenAlreadyOnRelease(t *testing.T) {
 	facts := armFacts("6.49.21", "100B", "routeros", "wireless")
+	for i := range facts.Packages {
+		facts.Packages[i].Version = "6.49.21"
+	}
 	man := manifest(
 		npk("routeros", "arm", 3<<20),
 		npk("wireless", "arm", 2<<20),
 	)
 	if err := preflight.Check(facts, man); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCheckDiskWhenSystemMatchesButPackagesStale(t *testing.T) {
+	facts := armFacts("6.49.21", "100B", "routeros", "wireless")
+	man := manifest(
+		npk("routeros", "arm", 3<<20),
+		npk("wireless", "arm", 2<<20),
+	)
+	err := preflight.Check(facts, man)
+	var disk *preflight.DiskError
+	if !errors.As(err, &disk) {
+		t.Fatalf("want DiskError, got %T %v", err, err)
+	}
+	if disk.Have != 100 {
+		t.Fatalf("Have %d", disk.Have)
+	}
+	if disk.Need != (5<<20)+(1<<20) {
+		t.Fatalf("Need %d", disk.Need)
 	}
 }
 
