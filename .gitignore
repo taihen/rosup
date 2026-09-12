@@ -33,3 +33,7 @@ dist/
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Brainstorm / local agent scratch
+.superpowers/
+docs/*

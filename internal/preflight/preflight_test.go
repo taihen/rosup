@@ -1,6 +1,7 @@
 package preflight_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -8,6 +9,25 @@ import (
 	"github.com/taihen/rosup/internal/preflight"
 	"github.com/taihen/rosup/internal/release"
 )
+
+func TestFormatSize(t *testing.T) {
+	cases := []struct {
+		n    int64
+		want string
+	}{
+		{3 << 20, "3 MiB"},
+		{2202009, "2.1 MiB"}, // 2.1 * 1024 * 1024 truncated
+		{4212 * 1024, "4.1 MiB"},
+		{1024, "1 KiB"},
+		{512, "512 B"},
+		{1024 * 1024 * 1024, "1 GiB"},
+	}
+	for _, tc := range cases {
+		if got := preflight.FormatSize(tc.n); got != tc.want {
+			t.Errorf("FormatSize(%d)=%q want %q", tc.n, got, tc.want)
+		}
+	}
+}
 
 func armFacts(version, free string, pkgs ...string) discover.Facts {
 	packages := make([]discover.Package, len(pkgs))
@@ -143,6 +163,58 @@ func TestCheckInsufficientFreeDisk(t *testing.T) {
 	// 4212.0KiB = 4212 * 1024 bytes
 	if !strings.Contains(err.Error(), "4313088") {
 		t.Fatalf("did not parse 4212.0KiB: %v", err)
+	}
+}
+
+func TestCheckInsufficientFreeDiskTyped(t *testing.T) {
+	facts := armFacts("6.49.18", "4212.0KiB", "routeros", "wireless")
+	man := manifest(
+		npk("routeros", "arm", 3<<20),
+		npk("wireless", "arm", 2<<20),
+	)
+	err := preflight.Check(facts, man)
+	var disk *preflight.DiskError
+	if !errors.As(err, &disk) {
+		t.Fatalf("want DiskError, got %T %v", err, err)
+	}
+	if disk.Have != 4212*1024 {
+		t.Fatalf("Have %d", disk.Have)
+	}
+	if disk.Need != (5<<20)+(1<<20) {
+		t.Fatalf("Need %d", disk.Need)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "not enough free disk") {
+		t.Fatalf("Error(): %v", err)
+	}
+	if !strings.Contains(msg, "4313088") || !strings.Contains(msg, "bytes") {
+		t.Fatalf("Error() should keep byte counts for upgrade one-liners: %v", err)
+	}
+}
+
+func TestCheckMissingPackagesTyped(t *testing.T) {
+	facts := armFacts("6.49.18", "4212.0KiB", "routeros", "wireless")
+	man := manifest(npk("routeros", "arm", 1000))
+	err := preflight.Check(facts, man)
+	var miss *preflight.MissingPackagesError
+	if !errors.As(err, &miss) {
+		t.Fatalf("want MissingPackagesError, got %T %v", err, err)
+	}
+	if miss.Arch != "arm" || strings.Join(miss.Packages, ",") != "wireless" {
+		t.Fatalf("%+v", miss)
+	}
+}
+
+func TestCheckRejectsROS7Typed(t *testing.T) {
+	facts := armFacts("7.11.2", "4212.0KiB", "routeros", "wireless")
+	man := manifest(npk("routeros", "arm", 1000), npk("wireless", "arm", 1000))
+	err := preflight.Check(facts, man)
+	var un *preflight.UnsupportedError
+	if !errors.As(err, &un) {
+		t.Fatalf("want UnsupportedError, got %T %v", err, err)
+	}
+	if un.Version != "7.11.2" {
+		t.Fatalf("Version %q", un.Version)
 	}
 }
 

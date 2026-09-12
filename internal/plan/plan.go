@@ -68,29 +68,41 @@ func Run(ctx context.Context, cfg *config.Config, version, group string, discove
 	return report, nil
 }
 
-func Format(w io.Writer, r *Report) error {
+func WriteReport(w io.Writer, r *Report) error {
 	if r == nil {
 		return errors.New("plan: nil report")
 	}
-	if _, err := fmt.Fprintf(w, "release: %s\n", r.Release); err != nil {
+	blocked, ready := countBlockedReady(r)
+	status := padRight("OK", len("FAILED"))
+	if blocked > 0 {
+		status = "FAILED"
+	}
+	if _, err := fmt.Fprintf(w, "plan: %s  %d blocked / %d ready / %d total  release %s\n",
+		status, blocked, ready, len(r.Devices), r.Release); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(w, "devices: %d\n", len(r.Devices)); err != nil {
+	if _, err := fmt.Fprintln(w, "summary"); err != nil {
 		return err
 	}
-	for _, d := range r.Devices {
-		missing := "none"
-		if len(d.Missing) > 0 {
-			missing = strings.Join(d.Missing, ", ")
-		}
-		if _, err := fmt.Fprintf(w, "%s\n  order: %d\n  role: %s\n  missing: %s\n",
-			d.Device.Name, d.Device.Order, d.Device.Role, missing); err != nil {
-			return err
-		}
-		if d.Skip != "" {
-			if _, err := fmt.Fprintf(w, "  skip: %s\n", d.Skip); err != nil {
+	counts := causeCounts(r)
+	for _, key := range summaryCauseOrder {
+		if n := counts[key]; n > 0 {
+			if err := writeSummaryLine(w, key, n); err != nil {
 				return err
 			}
+		}
+	}
+	if err := writeSummaryLine(w, "ready", ready); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "hosts"); err != nil {
+		return err
+	}
+	nameWidth, roleWidth, causeWidth := hostColumnWidths(r)
+	hasBlocked := blocked > 0
+	for _, d := range r.Devices {
+		if err := writeHostRow(w, d, nameWidth, roleWidth, causeWidth, hasBlocked); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -100,16 +112,109 @@ func Failure(r *Report) error {
 	if r == nil {
 		return nil
 	}
-	var parts []string
-	for _, d := range r.Devices {
-		if d.Err != nil {
-			parts = append(parts, fmt.Sprintf("%s: %v", d.Device.Name, d.Err))
-		}
-	}
-	if len(parts) == 0 {
+	blocked, ready := countBlockedReady(r)
+	if blocked == 0 {
 		return nil
 	}
-	return fmt.Errorf("plan: preflight failed:\n%s", strings.Join(parts, "\n"))
+	return fmt.Errorf("plan: preflight failed (%d blocked / %d ready)", blocked, ready)
+}
+
+var summaryCauseOrder = []string{"disk", "missing packages", "unsupported", "error"}
+
+const summaryKeyWidth = 18
+
+func writeSummaryLine(w io.Writer, key string, n int) error {
+	dots := summaryKeyWidth - len(key)
+	if dots < 2 {
+		dots = 2
+	}
+	_, err := fmt.Fprintf(w, "  %s %s %d\n", key, strings.Repeat(".", dots), n)
+	return err
+}
+
+func countBlockedReady(r *Report) (blocked, ready int) {
+	for _, d := range r.Devices {
+		if d.Err != nil {
+			blocked++
+		} else {
+			ready++
+		}
+	}
+	return blocked, ready
+}
+
+func causeCounts(r *Report) map[string]int {
+	counts := map[string]int{}
+	for _, d := range r.Devices {
+		if d.Err == nil {
+			continue
+		}
+		cause, _ := classify(d.Err)
+		counts[cause]++
+	}
+	return counts
+}
+
+func classify(err error) (cause, detail string) {
+	var disk *preflight.DiskError
+	if errors.As(err, &disk) {
+		return "disk", fmt.Sprintf("have %s  need %s", preflight.FormatSize(disk.Have), preflight.FormatSize(disk.Need))
+	}
+	var miss *preflight.MissingPackagesError
+	if errors.As(err, &miss) {
+		return "missing packages", miss.Arch + ": " + strings.Join(miss.Packages, ", ")
+	}
+	var un *preflight.UnsupportedError
+	if errors.As(err, &un) {
+		return "unsupported", "RouterOS 7 (" + un.Version + ")"
+	}
+	return "error", strings.TrimPrefix(err.Error(), "preflight: ")
+}
+
+func hostColumnWidths(r *Report) (name, role, cause int) {
+	for _, d := range r.Devices {
+		if n := len(d.Device.Name); n > name {
+			name = n
+		}
+		if n := len(d.Device.Role); n > role {
+			role = n
+		}
+		if d.Err == nil {
+			continue
+		}
+		c, _ := classify(d.Err)
+		if n := len(c); n > cause {
+			cause = n
+		}
+	}
+	return name, role, cause
+}
+
+func padRight(s string, width int) string {
+	if width <= len(s) {
+		return s
+	}
+	return s + strings.Repeat(" ", width-len(s))
+}
+
+func writeHostRow(w io.Writer, d Device, nameWidth, roleWidth, causeWidth int, hasBlocked bool) error {
+	name := padRight(d.Device.Name, nameWidth)
+	if d.Err != nil {
+		cause, detail := classify(d.Err)
+		_, err := fmt.Fprintf(w, "  %s  BLOCKED  %s  %s\n", name, padRight(cause, causeWidth), detail)
+		return err
+	}
+	missing := "none"
+	if len(d.Missing) > 0 {
+		missing = strings.Join(d.Missing, ", ")
+	}
+	status := "READY"
+	if hasBlocked {
+		status = padRight(status, len("BLOCKED"))
+	}
+	_, err := fmt.Fprintf(w, "  %s  %s  order %d  role %s  missing %s\n",
+		name, status, d.Device.Order, padRight(d.Device.Role, roleWidth), missing)
+	return err
 }
 
 func missingPackages(facts discover.Facts, man release.Manifest) []string {

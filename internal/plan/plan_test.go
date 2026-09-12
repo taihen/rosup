@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/taihen/rosup/internal/discover"
 	"github.com/taihen/rosup/internal/inventory"
 	"github.com/taihen/rosup/internal/plan"
+	"github.com/taihen/rosup/internal/preflight"
 	"github.com/taihen/rosup/internal/release"
 )
 
@@ -100,16 +102,18 @@ func TestRunReportsReadyGroup(t *testing.T) {
 	if err := plan.Failure(report); err != nil {
 		t.Fatal(err)
 	}
-	out := format(t, report)
-	want := "" +
-		"release: 6.49.21\n" +
-		"devices: 1\n" +
-		"router-01\n" +
-		"  order: 10\n" +
-		"  role: ospf\n" +
-		"  missing: none\n"
-	if out != want {
-		t.Fatalf("got %q want %q", out, want)
+	out := writeReport(t, report)
+	if !strings.HasPrefix(out, "plan: OK      0 blocked / 1 ready / 1 total  release 6.49.21\n") {
+		t.Fatalf("status line: %q", out)
+	}
+	if !strings.Contains(out, "summary\n  ready") {
+		t.Fatalf("summary: %q", out)
+	}
+	if !strings.Contains(out, "router-01") || !strings.Contains(out, "READY") {
+		t.Fatalf("got %q", out)
+	}
+	if !strings.Contains(out, "missing none") {
+		t.Fatalf("got %q", out)
 	}
 }
 
@@ -136,8 +140,8 @@ func TestRunReportsReadyWhenDevicePrintsRouterOSArchName(t *testing.T) {
 			if err := plan.Failure(report); err != nil {
 				t.Fatal(err)
 			}
-			out := format(t, report)
-			if !strings.Contains(out, "missing: none") {
+			out := writeReport(t, report)
+			if !strings.Contains(out, "missing none") {
 				t.Fatalf("got %q", out)
 			}
 		})
@@ -160,26 +164,24 @@ func TestRunMissingPackagesFailsPreflight(t *testing.T) {
 	if fail == nil {
 		t.Fatal("expected preflight failure")
 	}
-	if !strings.Contains(fail.Error(), "switch-01") {
-		t.Fatalf("got %v", fail)
+	if fail.Error() != "plan: preflight failed (1 blocked / 1 ready)" {
+		t.Fatalf("got %q", fail.Error())
 	}
-	if !strings.Contains(fail.Error(), "wireless") {
-		t.Fatalf("got %v", fail)
+	out := writeReport(t, report)
+	if !strings.HasPrefix(out, "plan: FAILED  1 blocked / 1 ready / 2 total  release 6.49.21\n") {
+		t.Fatalf("status line: %q", out)
 	}
-	out := format(t, report)
-	want := "" +
-		"release: 6.49.21\n" +
-		"devices: 2\n" +
-		"router-01\n" +
-		"  order: 10\n" +
-		"  role: ospf\n" +
-		"  missing: none\n" +
-		"switch-01\n" +
-		"  order: 20\n" +
-		"  role: switch\n" +
-		"  missing: wireless\n"
-	if out != want {
-		t.Fatalf("got %q want %q", out, want)
+	if !strings.Contains(out, "summary\n  missing packages") || !strings.Contains(out, "ready") {
+		t.Fatalf("summary: %q", out)
+	}
+	if !strings.Contains(out, "switch-01") || !strings.Contains(out, "BLOCKED  missing packages") {
+		t.Fatalf("got %q", out)
+	}
+	if !strings.Contains(out, "wireless") {
+		t.Fatalf("got %q", out)
+	}
+	if !strings.Contains(out, "router-01") || !strings.Contains(out, "READY") {
+		t.Fatalf("got %q", out)
 	}
 }
 
@@ -199,12 +201,24 @@ func TestRunDiskPreflightFailsWithNoMissing(t *testing.T) {
 	if fail == nil {
 		t.Fatal("expected preflight failure")
 	}
-	if !strings.Contains(fail.Error(), "not enough free disk") {
-		t.Fatalf("got %v", fail)
+	if fail.Error() != "plan: preflight failed (1 blocked / 0 ready)" {
+		t.Fatalf("got %q", fail.Error())
 	}
-	out := format(t, report)
-	if !strings.Contains(out, "missing: none") {
+	out := writeReport(t, report)
+	if !strings.HasPrefix(out, "plan: FAILED  1 blocked / 0 ready / 1 total  release 6.49.21\n") {
+		t.Fatalf("status line: %q", out)
+	}
+	if !strings.Contains(out, "summary\n  disk") {
+		t.Fatalf("summary: %q", out)
+	}
+	if !strings.Contains(out, "BLOCKED  disk") {
 		t.Fatalf("got %q", out)
+	}
+	if !strings.Contains(out, "have 4.1 MiB") || !strings.Contains(out, "need 6 MiB") {
+		t.Fatalf("human sizes missing: %q", out)
+	}
+	if strings.Contains(out, "bytes") {
+		t.Fatalf("raw bytes in report: %q", out)
 	}
 }
 
@@ -226,12 +240,109 @@ func TestRunSkipsDiskPreflightWhenAlreadyOnRelease(t *testing.T) {
 	if err := plan.Failure(report); err != nil {
 		t.Fatal(err)
 	}
-	out := format(t, report)
-	if !strings.Contains(out, "boa") || !strings.Contains(out, "skip: already 6.49.21") {
+	if report.Devices[0].Skip != "already 6.49.21" {
+		t.Fatalf("boa Skip %q", report.Devices[0].Skip)
+	}
+	if report.Devices[1].Skip != "" {
+		t.Fatalf("SAUZA2 Skip %q", report.Devices[1].Skip)
+	}
+	out := writeReport(t, report)
+	if !strings.Contains(out, "boa") || !strings.Contains(out, "READY") {
 		t.Fatalf("got %q", out)
 	}
-	if strings.Count(out, "skip:") != 1 {
-		t.Fatalf("want skip only for boa, got %q", out)
+	if strings.Contains(out, "skip:") {
+		t.Fatalf("skip must not appear in report: %q", out)
+	}
+}
+
+func TestWriteReportAllReady(t *testing.T) {
+	report := &plan.Report{
+		Release: "6.49.19",
+		Devices: []plan.Device{
+			{Device: inventory.Device{Name: "a", Role: "core", Order: 10}},
+			{Device: inventory.Device{Name: "b", Role: "edge", Order: 20}},
+		},
+	}
+	out := writeReport(t, report)
+	want := "" +
+		"plan: OK      0 blocked / 2 ready / 2 total  release 6.49.19\n" +
+		"summary\n" +
+		"  ready ............. 2\n" +
+		"hosts\n" +
+		"  a  READY  order 10  role core  missing none\n" +
+		"  b  READY  order 20  role edge  missing none\n"
+	if out != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
+	}
+	if err := plan.Failure(report); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWriteReportMixed(t *testing.T) {
+	report := &plan.Report{
+		Release: "6.49.19",
+		Devices: []plan.Device{
+			{Device: inventory.Device{Name: "belmond", Role: "core", Order: 10}},
+			{
+				Device: inventory.Device{Name: "pilaf", Role: "access", Order: 20},
+				Err:    &preflight.DiskError{Have: 2202009, Need: 26528972},
+			},
+			{
+				Device: inventory.Device{Name: "marron", Role: "radio", Order: 30},
+				Err:    &preflight.MissingPackagesError{Arch: "mipsbe", Packages: []string{"lte"}},
+			},
+		},
+	}
+	out := writeReport(t, report)
+	want := "" +
+		"plan: FAILED  2 blocked / 1 ready / 3 total  release 6.49.19\n" +
+		"summary\n" +
+		"  disk .............. 1\n" +
+		"  missing packages .. 1\n" +
+		"  ready ............. 1\n" +
+		"hosts\n" +
+		"  belmond  READY    order 10  role core    missing none\n" +
+		"  pilaf    BLOCKED  disk              have 2.1 MiB  need 25.3 MiB\n" +
+		"  marron   BLOCKED  missing packages  mipsbe: lte\n"
+	if out != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
+	}
+	if strings.Contains(out, "bytes") {
+		t.Fatalf("raw bytes leaked:\n%s", out)
+	}
+	fail := plan.Failure(report)
+	if fail == nil {
+		t.Fatal("expected failure")
+	}
+	if fail.Error() != "plan: preflight failed (2 blocked / 1 ready)" {
+		t.Fatalf("got %q", fail.Error())
+	}
+	if strings.Contains(fail.Error(), "pilaf") || strings.Contains(fail.Error(), "hosts") {
+		t.Fatalf("error must not embed table: %v", fail)
+	}
+}
+
+func TestWriteReportUnsupportedAndGenericError(t *testing.T) {
+	report := &plan.Report{
+		Release: "6.49.19",
+		Devices: []plan.Device{
+			{Device: inventory.Device{Name: "x"}, Err: &preflight.UnsupportedError{Version: "7.11.2"}},
+			{Device: inventory.Device{Name: "y"}, Err: errors.New("preflight: parse free-hdd-space \"nope\": invalid size")},
+		},
+	}
+	out := writeReport(t, report)
+	want := "" +
+		"plan: FAILED  2 blocked / 0 ready / 2 total  release 6.49.19\n" +
+		"summary\n" +
+		"  unsupported ....... 1\n" +
+		"  error ............. 1\n" +
+		"  ready ............. 0\n" +
+		"hosts\n" +
+		"  x  BLOCKED  unsupported  RouterOS 7 (7.11.2)\n" +
+		"  y  BLOCKED  error        parse free-hdd-space \"nope\": invalid size\n"
+	if out != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
 	}
 }
 
@@ -327,10 +438,10 @@ func manifest(files ...release.File) release.Manifest {
 	}
 }
 
-func format(t *testing.T, report *plan.Report) string {
+func writeReport(t *testing.T, report *plan.Report) string {
 	t.Helper()
 	var buf bytes.Buffer
-	if err := plan.Format(&buf, report); err != nil {
+	if err := plan.WriteReport(&buf, report); err != nil {
 		t.Fatal(err)
 	}
 	return buf.String()

@@ -132,6 +132,8 @@ rosup plan --release VERSION
 rosup upgrade --release VERSION --group GROUP
 ```
 
+`plan` prints the readiness report on stdout. If any host is blocked, it exits non-zero with a short counts-only error on stderr (host details stay on stdout).
+
 `release sync` prints `synced VERSION (N files)`. Use that VERSION. Omit `--group` to do every device. One device at a time. The first failure stops the run. A device already on the release skips packages and reboot. Incomplete jobs need `--resume` for the same release.
 
 ```
