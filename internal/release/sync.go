@@ -1,6 +1,8 @@
 package release
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -20,9 +22,10 @@ import (
 )
 
 const (
-	HTTPTimeout = 2 * time.Minute
-	maxMetaBody = 1 << 20
-	maxNPKBody  = 512 << 20
+	HTTPTimeout           = 2 * time.Minute
+	maxMetaBody           = 1 << 20
+	maxNPKBody            = 512 << 20
+	maxPackageArchiveBody = 128 << 20
 )
 
 type HTTPGet interface {
@@ -62,6 +65,9 @@ func bodyLimit(rawURL string) int64 {
 	}
 	if strings.HasSuffix(strings.ToLower(u), ".npk") {
 		return maxNPKBody
+	}
+	if strings.HasSuffix(strings.ToLower(u), ".zip") {
+		return maxPackageArchiveBody
 	}
 	return maxMetaBody
 }
@@ -132,6 +138,10 @@ func Sync(ctx context.Context, cfg *config.Config, client HTTPGet) (*Manifest, e
 	if err != nil {
 		return nil, err
 	}
+	files, err = syncPackageArchives(ctx, client, destDir, version, cfg.Architectures, files)
+	if err != nil {
+		return nil, err
+	}
 
 	channel := cfg.Channel
 	if channel == "" {
@@ -178,6 +188,93 @@ func syncFromListing(ctx context.Context, client HTTPGet, destDir, version strin
 		}
 	}
 	return downloadAll(ctx, client, destDir, planned, true)
+}
+
+func syncPackageArchives(ctx context.Context, client HTTPGet, destDir, version string, archs []string, files []File) ([]File, error) {
+	if err := os.MkdirAll(destDir, 0o700); err != nil {
+		return nil, fmt.Errorf("release: mkdir %s: %w", destDir, err)
+	}
+	if err := os.Chmod(destDir, 0o700); err != nil {
+		return nil, fmt.Errorf("release: chmod %s: %w", destDir, err)
+	}
+
+	present := make(map[string]struct{}, len(files))
+	for _, f := range files {
+		present[f.Architecture+"/"+f.Package] = struct{}{}
+	}
+
+	for _, arch := range archs {
+		archiveURL := AllPackagesURL(version, arch)
+		body, status, err := client.Get(ctx, archiveURL)
+		if err != nil {
+			return nil, fmt.Errorf("release: get %s: %w", archiveURL, err)
+		}
+		if status == http.StatusNotFound {
+			// Some architecture/release combinations publish only the individual
+			// packages. Keep those files usable; preflight will still fail closed
+			// if an installed package is not present in the manifest.
+			continue
+		}
+		if status != http.StatusOK {
+			return nil, fmt.Errorf("release: get %s: status %d", archiveURL, status)
+		}
+
+		zr, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
+		if err != nil {
+			return nil, fmt.Errorf("release: parse %s: %w", archiveURL, err)
+		}
+		matched := 0
+		for _, zf := range zr.File {
+			name := path.Base(zf.Name)
+			pkg, fileArch, ok := ParseNPKName(name, version)
+			if !ok || fileArch != arch {
+				continue
+			}
+			matched++
+			key := fileArch + "/" + pkg
+			if _, ok := present[key]; ok {
+				continue
+			}
+			if zf.UncompressedSize64 > uint64(maxNPKBody) {
+				return nil, fmt.Errorf("release: package %s in %s exceeds %d bytes", name, archiveURL, maxNPKBody)
+			}
+			rc, err := zf.Open()
+			if err != nil {
+				return nil, fmt.Errorf("release: open %s in %s: %w", name, archiveURL, err)
+			}
+			npk, readErr := readLimited(rc, maxNPKBody)
+			closeErr := rc.Close()
+			if readErr != nil {
+				return nil, fmt.Errorf("release: read %s in %s: %w", name, archiveURL, readErr)
+			}
+			if closeErr != nil {
+				return nil, fmt.Errorf("release: close %s in %s: %w", name, archiveURL, closeErr)
+			}
+			if uint64(len(npk)) != zf.UncompressedSize64 {
+				return nil, fmt.Errorf("release: size mismatch for %s in %s", name, archiveURL)
+			}
+
+			sum := sha256.Sum256(npk)
+			hexSum := hex.EncodeToString(sum[:])
+			if err := storeImmutable(filepath.Join(destDir, name), npk, hexSum); err != nil {
+				return nil, err
+			}
+			files = append(files, File{
+				Name:         name,
+				Architecture: fileArch,
+				Package:      pkg,
+				SHA256:       hexSum,
+				Size:         int64(len(npk)),
+			})
+			present[key] = struct{}{}
+		}
+		if matched == 0 {
+			return nil, fmt.Errorf("release: no %s packages in %s", arch, archiveURL)
+		}
+	}
+
+	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
+	return files, nil
 }
 
 func syncFromProbe(ctx context.Context, client HTTPGet, destDir, version string, archs []string) ([]File, error) {

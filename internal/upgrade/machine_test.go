@@ -225,10 +225,18 @@ func TestValidateRoleUsesProfileTimeoutNotReconnectBudget(t *testing.T) {
 
 func TestStagePackagesUploadsOnlyInstalledPackageNPKs(t *testing.T) {
 	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	world.sim("router-01").packages = []string{"routeros", "wireless", "dhcp"}
 	writeExtraNPK(t, cfg, target, release.File{
 		Name:         "dhcp-6.49.21-arm.npk",
 		Architecture: "arm",
 		Package:      "dhcp",
+		SHA256:       "abc",
+		Size:         1000,
+	})
+	writeExtraNPK(t, cfg, target, release.File{
+		Name:         "ups-6.49.21-arm.npk",
+		Architecture: "arm",
+		Package:      "ups",
 		SHA256:       "abc",
 		Size:         1000,
 	})
@@ -237,7 +245,7 @@ func TestStagePackagesUploadsOnlyInstalledPackageNPKs(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := world.sim("router-01").uploadedRemotes()
-	if strings.Join(got, ",") != "routeros-arm-6.49.21.npk,wireless-6.49.21-arm.npk" {
+	if strings.Join(got, ",") != "routeros-arm-6.49.21.npk,wireless-6.49.21-arm.npk,dhcp-6.49.21-arm.npk" {
 		t.Fatalf("uploads %v", got)
 	}
 }

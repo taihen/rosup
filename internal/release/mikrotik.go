@@ -63,6 +63,11 @@ func PackageURL(version, arch, pkg string) string {
 	return dir + "/" + name
 }
 
+func AllPackagesURL(version, arch string) string {
+	name := "all_packages-" + arch + "-" + version + ".zip"
+	return strings.TrimRight(DirectoryURL(version), "/") + "/" + name
+}
+
 func packageFileName(version, arch, pkg string) string {
 	if pkg == "routeros" {
 		return "routeros-" + arch + "-" + version + ".npk"

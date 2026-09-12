@@ -1,10 +1,13 @@
 package release_test
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -87,6 +90,79 @@ func listingHTTP(t *testing.T, bodyFor func(name string) []byte, archs ...string
 func fileURL(version, name string) string {
 	dir := strings.TrimRight(release.DirectoryURL(version), "/")
 	return dir + "/" + name
+}
+
+type archivePackage struct {
+	name string
+	body []byte
+}
+
+func packageArchive(t *testing.T, packages ...archivePackage) []byte {
+	t.Helper()
+	var body bytes.Buffer
+	zw := zip.NewWriter(&body)
+	for _, pkg := range packages {
+		w, err := zw.Create(pkg.name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(pkg.body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return body.Bytes()
+}
+
+func TestSyncIncludesExtraPackagesFromArchitectureArchive(t *testing.T) {
+	const version = "6.49.21"
+	cfg := testConfig(t, "mipsbe")
+	f := newFakeHTTP(t)
+	f.set(release.NewestURL(), http.StatusOK, mikrotikFixture(t, "NEWEST6.long-term"))
+	names := []string{
+		"routeros-mipsbe-6.49.21.npk",
+		"system-6.49.21-mipsbe.npk",
+	}
+	var listing strings.Builder
+	for _, name := range names {
+		fmt.Fprintf(&listing, `<a href="%s">%s</a>`, name, name)
+		f.set(fileURL(version, name), http.StatusOK, []byte("direct:"+name))
+	}
+	f.set(release.DirectoryURL(version), http.StatusOK, []byte(listing.String()))
+	f.set(release.AllPackagesURL(version, "mipsbe"), http.StatusOK, packageArchive(t,
+		archivePackage{name: "routeros-mipsbe-6.49.21.npk", body: []byte("archive:routeros")},
+		archivePackage{name: "lte-6.49.21-mipsbe.npk", body: []byte("lte")},
+		archivePackage{name: "ups-6.49.21-mipsbe.npk", body: []byte("ups")},
+		archivePackage{name: "wireless-6.49.21-arm.npk", body: []byte("wrong architecture")},
+	))
+
+	man, err := release.Sync(context.Background(), cfg, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]release.File{}
+	for _, file := range man.Files {
+		if _, exists := got[file.Package]; exists {
+			t.Fatalf("duplicate package %q in manifest", file.Package)
+		}
+		got[file.Package] = file
+	}
+	for _, pkg := range []string{"routeros", "system", "lte", "ups"} {
+		if _, ok := got[pkg]; !ok {
+			t.Errorf("manifest missing package %q", pkg)
+		}
+	}
+	if _, ok := got["wireless"]; ok {
+		t.Fatal("manifest included package for a different architecture")
+	}
+	if got["routeros"].Name != "routeros-mipsbe-6.49.21.npk" {
+		t.Fatalf("archive overwrote direct package: %s", got["routeros"].Name)
+	}
+	if err := release.VerifyLocalFile(filepath.Join(cfg.PackageDir, version), got["lte"]); err != nil {
+		t.Fatalf("verify extracted lte package: %v", err)
+	}
 }
 
 func TestSyncSHA256MismatchFails(t *testing.T) {

@@ -126,6 +126,10 @@ func TestPackageURLs(t *testing.T) {
 	if extra != "https://download.mikrotik.com/routeros/6.49.21/wireless-6.49.21-arm.npk" {
 		t.Fatalf("extra url %q", extra)
 	}
+	all := release.AllPackagesURL("6.49.21", "mipsbe")
+	if all != "https://download.mikrotik.com/routeros/6.49.21/all_packages-mipsbe-6.49.21.zip" {
+		t.Fatalf("all packages url %q", all)
+	}
 }
 
 func TestParseNPKNameLivePatterns(t *testing.T) {
