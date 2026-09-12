@@ -95,9 +95,10 @@ func Check(facts discover.Facts, man release.Manifest) error {
 	if err := rejectROS7(man.Version); err != nil {
 		return err
 	}
-	// Disk check is only for staging packages. Matching system version means
-	// packages are already installed enough that free space is not a gate.
-	if VersionMatches(facts, man.Version) {
+	// Disk check is only for staging packages. Skip when system and all
+	// packages already match the target; a matching system version alone is
+	// not enough if packages still need staging.
+	if AlreadyOnRelease(facts, man.Version) {
 		return nil
 	}
 
