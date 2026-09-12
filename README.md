@@ -10,7 +10,7 @@ It downloads Long-term packages, upgrades one device at a time, checks the resul
 
 Three places matter.
 
-**Git** is the ops repo. The checkout lives at `ops.path` and the remote is `ops.remote`. You commit `inventory/` so the controller knows which boxes exist and which role each one has. After an upgrade finishes, rosup writes `audit/` so you can read what changed without mixing that into inventory. The GitHub deploy key is ed25519.
+**Git** is the ops repo. The checkout lives at `ops.path` and the remote is `ops.remote`. You commit `inventory/` so the controller knows which boxes exist and which role each one has. After an upgrade finishes, rosup writes `audit/` so you can read what changed without mixing that into inventory. Periodic `backup run` writes redacted text exports under `backups/`. The GitHub deploy key is ed25519.
 
 **Managed devices** are the rows in `inventory/devices.yaml`. Each row is a name, address, port, role, group, and order. That file is the fleet. rosup does not scan the network. Upgrade order is group, then order, then name.
 
@@ -73,9 +73,10 @@ Point `ops.path` at an ops git checkout:
 inventory/devices.yaml
 inventory/profiles/<role>.yaml
 audit/
+backups/
 ```
 
-Commit `inventory/` yourself. rosup never commits that path. `audit/` is written when an upgrade completes. Do not edit it.
+Commit `inventory/` yourself. rosup never commits that path. `audit/` is written when an upgrade completes. `backups/` holds dated text exports from `backup run`. Do not edit those machine-written trees.
 
 ```yaml
 # Human-edited. rosup never commits this path.
@@ -165,8 +166,12 @@ rosup status --group GROUP --release VERSION
 rosup verify DEVICE
 rosup upgrade --release VERSION --group GROUP --resume
 rosup rollback DEVICE --to-version VERSION
+rosup backup run
+rosup backup run --group GROUP
 rosup backup restore DEVICE --file PATH
 ```
+
+`backup run` takes a local binary backup and text export per device, prunes old files under `backup_dir` by `backup_retention_days`, then commits redacted `.rsc` files to the ops repo at `backups/<device>/YYYY/MM/<device>-<timestamp>.rsc`. Failed devices are skipped for the git push; the command exits non-zero if any device or the push failed. Suitable for cron.
 
 `status` joins inventory with local job state. After a fix, resume the same release; do not change `--release` mid-job. With `--resume`, only failed or in-progress jobs for that release continue; pending and untouched devices are skipped.
 

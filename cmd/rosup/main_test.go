@@ -205,6 +205,17 @@ func TestBackupRequiresSubcommand(t *testing.T) {
 	}
 }
 
+func TestBackupRunNeedsInventory(t *testing.T) {
+	configPath, _ := writeCLIConfig(t)
+	_, _, err := execute(t, "--config", configPath, "backup", "run")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "not implemented") {
+		t.Fatalf("should fail loading inventory, got %v", err)
+	}
+}
+
 func TestDiscoverMissingConfigFlag(t *testing.T) {
 	_, _, err := execute(t, "--config", "/no/such/rosup.yaml", "discover")
 	if err == nil {
