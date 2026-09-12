@@ -40,6 +40,16 @@ func (e *UnsupportedError) Error() string {
 	return fmt.Sprintf("preflight: RouterOS 7 is not supported (%s)", e.Version)
 }
 
+type DependsError struct {
+	Device string
+	Dep    string
+	Reason string
+}
+
+func (e *DependsError) Error() string {
+	return fmt.Sprintf("preflight: depends_on %s: %s", e.Dep, e.Reason)
+}
+
 // FormatSize renders binary units for the plan report (no raw bytes).
 func FormatSize(n int64) string {
 	if n < 0 {

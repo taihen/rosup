@@ -80,6 +80,13 @@ Commit `inventory/` yourself. rosup never commits that path. `audit/` is written
 ```yaml
 # Human-edited. rosup never commits this path.
 devices:
+  - name: core-1
+    address: 192.0.2.1
+    port: 60022
+    role: ospf
+    group: core
+    validation_profile: ospf
+    order: 10
   - name: edge-1
     address: 192.0.2.10
     port: 60022
@@ -87,9 +94,12 @@ devices:
     group: radio
     validation_profile: radio
     order: 10
+    depends_on: [core-1]
 ```
 
 `role` and `validation_profile` must each be `ospf`, `pppoe`, `radio`, `switch`, or `access`. They are usually the same. Each used role needs `inventory/profiles/<role>.yaml` with `convergence_timeout`. That wait starts after SSH is back, not during the 3m reconnect. Radio is typically 5m. PPPoE is 10m plus `session_restore_timeout`. Do not upgrade a console router with almost no free disk.
+
+Upgrade order is group, then order, then name. `depends_on` adds a gate: each dependency must be complete on that release, or upgrade earlier in the same run. Unmet deps show as BLOCKED in `plan`.
 
 ## Config
 
@@ -132,7 +142,7 @@ rosup plan --release VERSION
 rosup upgrade --release VERSION --group GROUP
 ```
 
-`plan` prints the readiness report on stdout. If any host is blocked, it exits non-zero with a short counts-only error on stderr (host details stay on stdout).
+`plan` prints the readiness report on stdout. If any host is blocked (disk, missing packages, unmet `depends_on`, or unsupported), it exits non-zero with a short counts-only error on stderr (host details stay on stdout).
 
 `release sync` prints `synced VERSION (N files)`. Use that VERSION. Omit `--group` to do every device. One device at a time. The first failure stops the run. A device already on the release skips packages and reboot. Incomplete jobs need `--resume` for the same release.
 
