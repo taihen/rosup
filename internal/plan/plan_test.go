@@ -16,6 +16,7 @@ import (
 	"github.com/taihen/rosup/internal/plan"
 	"github.com/taihen/rosup/internal/preflight"
 	"github.com/taihen/rosup/internal/release"
+	"github.com/taihen/rosup/internal/state"
 )
 
 func TestRunRequiresRelease(t *testing.T) {
@@ -362,6 +363,168 @@ func TestRunEmptyGroupDiscoversAll(t *testing.T) {
 	}
 }
 
+func TestRunDependsSatisfiedByCompleteJob(t *testing.T) {
+	cfg := testConfig(t)
+	writeReadyArmManifest(t, cfg)
+	saveCompleteJob(t, cfg, "core-1", "6.49.21")
+	report, err := plan.Run(context.Background(), cfg, "6.49.21", "edge", fakeDiscover(
+		resultDeps("edge-1", "ospf", 10, []string{"core-1"}, armFacts("6.49.18", "4212.0KiB", "routeros", "wireless")),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.Failure(report); err != nil {
+		t.Fatal(err)
+	}
+	out := writeReport(t, report)
+	if !strings.Contains(out, "edge-1") || !strings.Contains(out, "READY") {
+		t.Fatalf("got %q", out)
+	}
+}
+
+func TestRunDependsBlockedWhenDepMissingFromPlanAndState(t *testing.T) {
+	cfg := testConfig(t)
+	writeReadyArmManifest(t, cfg)
+	report, err := plan.Run(context.Background(), cfg, "6.49.21", "edge", fakeDiscover(
+		resultDeps("edge-1", "ospf", 10, []string{"core-1"}, armFacts("6.49.18", "4212.0KiB", "routeros", "wireless")),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Failure(report) == nil {
+		t.Fatal("expected preflight failure")
+	}
+	out := writeReport(t, report)
+	if !strings.Contains(out, "summary\n  depends") {
+		t.Fatalf("summary: %q", out)
+	}
+	if !strings.Contains(out, "BLOCKED  depends") {
+		t.Fatalf("got %q", out)
+	}
+	if !strings.Contains(out, "core-1:") || !strings.Contains(out, "no job for release 6.49.21") {
+		t.Fatalf("got %q", out)
+	}
+}
+
+func TestRunDependsSatisfiedWhenDepEarlierInSamePlan(t *testing.T) {
+	cfg := testConfig(t)
+	writeReadyArmManifest(t, cfg)
+	report, err := plan.Run(context.Background(), cfg, "6.49.21", "", fakeDiscover(
+		resultDeps("core-1", "ospf", 10, nil, armFacts("6.49.18", "4212.0KiB", "routeros", "wireless")),
+		resultDeps("edge-1", "ospf", 20, []string{"core-1"}, armFacts("6.49.18", "4212.0KiB", "routeros", "wireless")),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.Failure(report); err != nil {
+		t.Fatal(err)
+	}
+	out := writeReport(t, report)
+	if !strings.Contains(out, "edge-1") || !strings.Contains(out, "READY") {
+		t.Fatalf("got %q", out)
+	}
+	if strings.Contains(out, "depends") {
+		t.Fatalf("unexpected depends block: %q", out)
+	}
+}
+
+func TestRunDependsBlockedWhenDepLaterInSamePlan(t *testing.T) {
+	cfg := testConfig(t)
+	writeReadyArmManifest(t, cfg)
+	report, err := plan.Run(context.Background(), cfg, "6.49.21", "", fakeDiscover(
+		resultDeps("edge-1", "ospf", 10, []string{"core-1"}, armFacts("6.49.18", "4212.0KiB", "routeros", "wireless")),
+		resultDeps("core-1", "ospf", 20, nil, armFacts("6.49.18", "4212.0KiB", "routeros", "wireless")),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Failure(report) == nil {
+		t.Fatal("expected preflight failure")
+	}
+	out := writeReport(t, report)
+	if !strings.Contains(out, "edge-1") || !strings.Contains(out, "BLOCKED  depends") {
+		t.Fatalf("got %q", out)
+	}
+	if !strings.Contains(out, "sorts after this host in plan") {
+		t.Fatalf("got %q", out)
+	}
+}
+
+func TestRunDependsSkippedWhenAlreadyOnRelease(t *testing.T) {
+	cfg := testConfig(t)
+	writeReadyArmManifest(t, cfg)
+	report, err := plan.Run(context.Background(), cfg, "6.49.21", "edge", fakeDiscover(
+		resultDeps("edge-1", "ospf", 10, []string{"core-1"}, armFacts("6.49.21", "1916.0KiB", "routeros", "wireless")),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.Failure(report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Devices[0].Skip != "already 6.49.21" {
+		t.Fatalf("Skip %q", report.Devices[0].Skip)
+	}
+	out := writeReport(t, report)
+	if !strings.Contains(out, "READY") {
+		t.Fatalf("got %q", out)
+	}
+	if strings.Contains(out, "depends") {
+		t.Fatalf("unexpected depends: %q", out)
+	}
+}
+
+func TestRunDependsDoesNotOverwriteDiskPreflight(t *testing.T) {
+	cfg := testConfig(t)
+	writeManifest(t, cfg, manifest(
+		npk("routeros", "arm", 3<<20),
+		npk("wireless", "arm", 2<<20),
+	))
+	report, err := plan.Run(context.Background(), cfg, "6.49.21", "edge", fakeDiscover(
+		resultDeps("edge-1", "ospf", 10, []string{"core-1"}, armFacts("6.49.18", "4212.0KiB", "routeros", "wireless")),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Failure(report) == nil {
+		t.Fatal("expected preflight failure")
+	}
+	out := writeReport(t, report)
+	if !strings.Contains(out, "BLOCKED  disk") {
+		t.Fatalf("disk must win: %q", out)
+	}
+	if strings.Contains(out, "depends") {
+		t.Fatalf("depends must not overwrite disk: %q", out)
+	}
+	var disk *preflight.DiskError
+	if !errors.As(report.Devices[0].Err, &disk) {
+		t.Fatalf("want DiskError, got %T %v", report.Devices[0].Err, report.Devices[0].Err)
+	}
+}
+
+func TestWriteReportDependsCause(t *testing.T) {
+	report := &plan.Report{
+		Release: "6.49.19",
+		Devices: []plan.Device{
+			{
+				Device: inventory.Device{Name: "edge-1", Role: "ospf", Order: 10},
+				Err:    &preflight.DependsError{Device: "edge-1", Dep: "core-1", Reason: "no job for release 6.49.19"},
+			},
+		},
+	}
+	out := writeReport(t, report)
+	want := "" +
+		"plan: FAILED  1 blocked / 0 ready / 1 total  release 6.49.19\n" +
+		"summary\n" +
+		"  depends ........... 1\n" +
+		"  ready ............. 0\n" +
+		"hosts\n" +
+		"  edge-1  BLOCKED  depends  core-1: no job for release 6.49.19\n"
+	if out != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
+	}
+}
+
 func testConfig(t *testing.T) *config.Config {
 	t.Helper()
 	root := t.TempDir()
@@ -386,6 +549,14 @@ func writeManifest(t *testing.T, cfg *config.Config, man release.Manifest) {
 	}
 }
 
+func writeReadyArmManifest(t *testing.T, cfg *config.Config) {
+	t.Helper()
+	writeManifest(t, cfg, manifest(
+		npk("routeros", "arm", 1000),
+		npk("wireless", "arm", 1000),
+	))
+}
+
 func fakeDiscover(results ...discover.Result) plan.DiscoverFunc {
 	return func(context.Context, *config.Config, string) ([]discover.Result, error) {
 		return results, nil
@@ -393,9 +564,29 @@ func fakeDiscover(results ...discover.Result) plan.DiscoverFunc {
 }
 
 func result(name, role string, order int, facts discover.Facts) discover.Result {
+	return resultDeps(name, role, order, nil, facts)
+}
+
+func resultDeps(name, role string, order int, deps []string, facts discover.Facts) discover.Result {
 	return discover.Result{
-		Device: inventory.Device{Name: name, Role: role, Order: order},
+		Device: inventory.Device{Name: name, Role: role, Order: order, DependsOn: deps},
 		Facts:  facts,
+	}
+}
+
+func saveCompleteJob(t *testing.T, cfg *config.Config, device, version string) {
+	t.Helper()
+	if err := state.EnsureSecureDir(cfg.StateDir); err != nil {
+		t.Fatal(err)
+	}
+	job := &state.DeviceJob{
+		Device:  device,
+		Release: version,
+		Status:  state.StatusComplete,
+		Stage:   "done",
+	}
+	if err := state.Save(cfg.StateDir, job); err != nil {
+		t.Fatal(err)
 	}
 }
 

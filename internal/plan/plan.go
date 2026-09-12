@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/taihen/rosup/internal/config"
@@ -12,6 +13,7 @@ import (
 	"github.com/taihen/rosup/internal/inventory"
 	"github.com/taihen/rosup/internal/preflight"
 	"github.com/taihen/rosup/internal/release"
+	"github.com/taihen/rosup/internal/state"
 )
 
 type DiscoverFunc func(ctx context.Context, cfg *config.Config, group string) ([]discover.Result, error)
@@ -65,7 +67,72 @@ func Run(ctx context.Context, cfg *config.Config, version, group string, discove
 			Err:     preflight.Check(r.Facts, man),
 		})
 	}
+	applyDepends(report, cfg.StateDir)
 	return report, nil
+}
+
+func applyDepends(report *Report, stateDir string) {
+	byName := make(map[string]int, len(report.Devices))
+	for i, d := range report.Devices {
+		byName[d.Device.Name] = i
+	}
+	for i := range report.Devices {
+		d := &report.Devices[i]
+		if d.Err != nil || d.Skip != "" {
+			continue
+		}
+		for _, dep := range d.Device.DependsOn {
+			if err := checkPlanDepend(report, byName, d.Device, stateDir, dep, report.Release); err != nil {
+				d.Err = err
+				break
+			}
+		}
+	}
+}
+
+func checkPlanDepend(report *Report, byName map[string]int, device inventory.Device, stateDir, depName, version string) error {
+	if depIdx, ok := byName[depName]; ok {
+		dep := report.Devices[depIdx]
+		if dep.Skip != "" {
+			return nil
+		}
+		if !sortsBefore(dep.Device, device) {
+			return dependsErr(device.Name, depName, "sorts after this host in plan")
+		}
+		if dep.Err != nil {
+			return dependsErr(device.Name, depName, "blocked in this plan")
+		}
+		return nil
+	}
+
+	job, err := state.Load(stateDir, depName)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return dependsErr(device.Name, depName, "no job for release "+version)
+		}
+		return dependsErr(device.Name, depName, err.Error())
+	}
+	if job.Status != state.StatusComplete {
+		return dependsErr(device.Name, depName, fmt.Sprintf("want complete on %s (status %s)", version, job.Status))
+	}
+	if job.Release != version {
+		return dependsErr(device.Name, depName, fmt.Sprintf("want complete on %s (release %s)", version, job.Release))
+	}
+	return nil
+}
+
+func dependsErr(device, dep, reason string) *preflight.DependsError {
+	return &preflight.DependsError{Device: device, Dep: dep, Reason: reason}
+}
+
+func sortsBefore(a, b inventory.Device) bool {
+	if a.Group != b.Group {
+		return a.Group < b.Group
+	}
+	if a.Order != b.Order {
+		return a.Order < b.Order
+	}
+	return a.Name < b.Name
 }
 
 func WriteReport(w io.Writer, r *Report) error {
@@ -119,7 +186,7 @@ func Failure(r *Report) error {
 	return fmt.Errorf("plan: preflight failed (%d blocked / %d ready)", blocked, ready)
 }
 
-var summaryCauseOrder = []string{"disk", "missing packages", "unsupported", "error"}
+var summaryCauseOrder = []string{"disk", "missing packages", "depends", "unsupported", "error"}
 
 const summaryKeyWidth = 18
 
@@ -163,6 +230,10 @@ func classify(err error) (cause, detail string) {
 	var miss *preflight.MissingPackagesError
 	if errors.As(err, &miss) {
 		return "missing packages", miss.Arch + ": " + strings.Join(miss.Packages, ", ")
+	}
+	var dep *preflight.DependsError
+	if errors.As(err, &dep) {
+		return "depends", dep.Dep + ": " + dep.Reason
 	}
 	var un *preflight.UnsupportedError
 	if errors.As(err, &un) {
