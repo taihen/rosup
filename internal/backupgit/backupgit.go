@@ -11,10 +11,9 @@ import (
 
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
-	"github.com/go-git/go-git/v5/plumbing/transport"
-	gitssh "github.com/go-git/go-git/v5/plumbing/transport/ssh"
 
 	"github.com/taihen/rosup/internal/config"
+	"github.com/taihen/rosup/internal/opsgit"
 	"github.com/taihen/rosup/internal/redact"
 )
 
@@ -46,17 +45,17 @@ func Push(ctx context.Context, cfg *config.Config, items []Item) error {
 		}
 	}
 
-	auth, err := gitAuth(cfg)
+	auth, err := opsgit.Auth(cfg)
 	if err != nil {
-		return err
+		return fmt.Errorf("backupgit: %w", err)
 	}
 
-	repo, err := git.PlainOpen(cfg.Ops.Path)
+	repo, err := opsgit.Open(cfg)
 	if err != nil {
-		return fmt.Errorf("backupgit: open %s: %w", cfg.Ops.Path, err)
+		return fmt.Errorf("backupgit: %w", err)
 	}
-	if err := checkRemote(repo, cfg.Ops.Remote); err != nil {
-		return err
+	if err := opsgit.CheckRemote(repo, cfg.Ops.Remote); err != nil {
+		return fmt.Errorf("backupgit: %w", err)
 	}
 	wt, err := repo.Worktree()
 	if err != nil {
@@ -160,57 +159,6 @@ func commitMessage(n int) string {
 		return "backup: 1 device"
 	}
 	return fmt.Sprintf("backup: %d devices", n)
-}
-
-func checkRemote(repo *git.Repository, want string) error {
-	if want == "" {
-		return errors.New("backupgit: ops.remote is required")
-	}
-	remote, err := repo.Remote("origin")
-	if err != nil {
-		return fmt.Errorf("backupgit: origin remote: %w", err)
-	}
-	for _, url := range remote.Config().URLs {
-		if url == want {
-			return nil
-		}
-	}
-	return fmt.Errorf("backupgit: origin URLs %v do not match ops.remote %q", remote.Config().URLs, want)
-}
-
-func gitAuth(cfg *config.Config) (transport.AuthMethod, error) {
-	keyPath := cfg.Ops.SSHPrivateKeyPath
-	if needsSSHAuth(cfg.Ops.Remote) && keyPath == "" {
-		return nil, errors.New("backupgit: ops.ssh_private_key_path is required for SSH remotes")
-	}
-	if keyPath == "" {
-		return nil, nil
-	}
-	if cfg.Ops.GitKnownHostsPath == "" {
-		return nil, errors.New("backupgit: ops.git_known_hosts_path is required when ops.ssh_private_key_path is set")
-	}
-	auth, err := gitssh.NewPublicKeysFromFile("git", keyPath, "")
-	if err != nil {
-		return nil, fmt.Errorf("backupgit: load ops git ssh key %s: %w", keyPath, err)
-	}
-	cb, err := gitssh.NewKnownHostsCallback(cfg.Ops.GitKnownHostsPath)
-	if err != nil {
-		return nil, fmt.Errorf("backupgit: load ops git known_hosts %s: %w", cfg.Ops.GitKnownHostsPath, err)
-	}
-	auth.HostKeyCallback = cb
-	return auth, nil
-}
-
-func needsSSHAuth(remote string) bool {
-	if strings.HasPrefix(remote, "git@") || strings.HasPrefix(remote, "ssh://") {
-		return true
-	}
-	if strings.Contains(remote, "://") {
-		return false
-	}
-	at := strings.Index(remote, "@")
-	colon := strings.LastIndex(remote, ":")
-	return at > 0 && colon > at
 }
 
 func validateName(kind, name string) error {
