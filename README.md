@@ -59,9 +59,10 @@ From an admin session:
 ```
 /user add name=rosup group=full password=... address=CONTROLLER_IPV4/32 comment="rosup-controller"
 /user ssh-keys import user=rosup public-key-file=id_rsa.pub
+/ip service set [find name=ssh] address=CONTROLLER_IPV4/32,... port=60022
 ```
 
-RouterOS requires a password on `/user add`. rosup logs in with the key. If failed logins put the controller on the `/ip ssh` blacklist, clear it from an admin session before retrying.
+RouterOS requires a password on `/user add`. rosup logs in with the key. The controller must also be allowed on `/ip service` for `ssh` (same address list as other admin hosts; keep existing entries and add the controller). Match `port` to `ssh.default_port` in `rosup.yaml`. If failed logins put the controller on the `/ip ssh` blacklist, clear it from an admin session before retrying.
 
 The first successful SSH stores the host key. A later mismatch is a hard failure. Remove the stale `known_hosts` entry after you confirm the device yourself.
 
