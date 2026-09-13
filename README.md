@@ -12,7 +12,7 @@ Three places matter.
 
 **Git** is the ops repo. The checkout lives at `ops.path` and the remote is `ops.remote`. You commit `inventory/` so the controller knows which boxes exist and which role each one has. After an upgrade finishes, rosup writes `audit/` so you can read what changed without mixing that into inventory. Periodic `backup run` writes redacted text exports under `backups/`. The GitHub deploy key is ed25519.
 
-**Managed devices** are the rows in `inventory/devices.yaml`. Each row is a name, address, port, role, group, and order. That file is the fleet. rosup does not scan the network. Upgrade order is group, then order, then name.
+**Managed devices** are the rows in `inventory/devices.yaml`. Each row is a name, address, port, role, validation profile, group, order, and optional depends_on. That file is the fleet. rosup does not scan the network. Upgrade order is group, then order, then name.
 
 **RouterOS** runs on those devices. The controller logs in as user `rosup` over SSH with an RSA key. That is the OS being upgraded. One device at a time, so a failure stops the run before the next box.
 
@@ -78,6 +78,10 @@ backups/
 
 Commit `inventory/` yourself. rosup never commits that path. `audit/` is written when an upgrade completes. `backups/` holds dated text exports from `backup run`. Do not edit those machine-written trees.
 
+### devices.yaml
+
+`inventory/devices.yaml` is the fleet. One YAML list under `devices:`. Each entry is one RouterOS box. rosup does not discover hosts. If a box is missing from this file, it is not managed.
+
 ```yaml
 # Human-edited. rosup never commits this path.
 devices:
@@ -98,15 +102,80 @@ devices:
     depends_on: [core-1]
 ```
 
-`role` and `validation_profile` must each be `ospf`, `pppoe`, `radio`, `switch`, or `access`. They are usually the same. Each used role needs `inventory/profiles/<role>.yaml` with `convergence_timeout`. That wait starts after SSH is back, not during the 3m reconnect. Radio is typically 5m. PPPoE is 10m plus `session_restore_timeout`. Do not upgrade a console router with almost no free disk.
+SSH username, keys, TOFU, timeouts, and the default port live in `rosup.yaml`. They are not device fields.
 
-Devices that report `routerboard: no` from `/system routerboard print` are
-supported for RouterOS package upgrades. rosup skips the RouterBOOT update and
-reboot stages for them. RouterBOARD devices, and legacy output without the
-`routerboard` marker, must report both `current-firmware` and
-`upgrade-firmware`.
+#### Device fields
 
-Upgrade order is group, then order, then name. `depends_on` adds a gate: each dependency must be complete on that release, or upgrade earlier in the same run. Unmet deps show as BLOCKED in `plan`.
+**name** (required)
+
+Inventory id and RouterOS identity. Letters, digits, `.`, `_`, and `-` only. Pattern: `^[A-Za-z0-9._-]+$`. Must be unique. `discover` requires the device identity to match this name.
+
+**address** (required)
+
+Host or IP for SSH. Must be unique together with `port`. Two devices may not share the same address and port. If `port` is omitted (treated as 0), that address also collides with any other entry that uses the same address on an explicit port.
+
+**port** (optional)
+
+SSH port for this device. Omit it to use `ssh.default_port` from config (22 unless you set something else).
+
+**role** (required)
+
+What kind of box this is. Must be one of:
+
+- `ospf`
+- `pppoe`
+- `radio`
+- `switch`
+- `access`
+
+**validation_profile** (required)
+
+Which post-upgrade checks to run. Same allowed values as `role`. Almost always the same string. Use a different value only when the check profile should differ from the role label. The profile file is `inventory/profiles/<validation_profile>.yaml`.
+
+**group** (optional)
+
+Batch label for `plan`, `upgrade`, `discover`, `status`, and `backup run --group`. Empty is allowed. Sort key with `order` and `name`.
+
+**order** (optional)
+
+Integer inside a group. Lower numbers run first. Default is 0 when omitted. Upgrade and plan order is group (string sort), then order, then name.
+
+**depends_on** (optional)
+
+List of other device `name` values that must finish this release before this device upgrades. Each name must exist in the same file. A device may not depend on itself. Cycles are rejected at load time.
+
+Each dependency must already be complete on that release, or upgrade earlier in the same run. Unmet deps show as BLOCKED in `plan`.
+
+#### Load rules
+
+Inventory load fails if any of these hold:
+
+- duplicate `name`
+- empty `address`
+- unknown `role` or `validation_profile`
+- shared address/port as described under `address`
+- bad `name` charset
+- `depends_on` pointing at a missing name, self, or a cycle
+
+#### Profiles
+
+Each distinct `validation_profile` you use needs `inventory/profiles/<name>.yaml`.
+
+Required:
+
+- `convergence_timeout`: Go duration string such as `5m`. Must be positive. Wait starts after SSH is back, not during the reconnect budget (default 3m).
+
+Optional:
+
+- `neighbor_state_allow`: OSPF neighbor states to accept. Default is `Full` and `2-Way`.
+- `route_count_tolerance`: how many extra OSPF routes above baseline are allowed. Default 0.
+- `session_restore_timeout`: extra wait for PPPoE sessions. Use with a longer `convergence_timeout` for PPPoE.
+
+Typical starting points: radio `5m`, PPPoE `10m` plus `session_restore_timeout`, switch and access a couple of minutes. Do not upgrade a console router with almost no free disk.
+
+#### Hardware notes
+
+Devices that report `routerboard: no` from `/system routerboard print` are supported for RouterOS package upgrades. rosup skips the RouterBOOT update and reboot stages for them. RouterBOARD devices, and legacy output without the `routerboard` marker, must report both `current-firmware` and `upgrade-firmware`.
 
 ## Config
 
