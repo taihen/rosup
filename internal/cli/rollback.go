@@ -27,6 +27,10 @@ func runRollback(cmd *cobra.Command, args []string) error {
 	if toVersion == "" {
 		return errors.New("rollback: --to-version is required")
 	}
+	group, err := cmd.Flags().GetString("group")
+	if err != nil {
+		return err
+	}
 
 	cfg, err := loadConfig(cmd)
 	if err != nil {
@@ -45,7 +49,7 @@ func runRollback(cmd *cobra.Command, args []string) error {
 		defer cancel()
 	}
 
-	return upgrade.Rollback(ctx, cfg, args[0], toVersion, upgrade.Options{
+	return upgrade.Rollback(ctx, cfg, args[0], toVersion, group, upgrade.Options{
 		Dial: transport.Dial,
 	})
 }

@@ -19,7 +19,7 @@ import (
 	"github.com/taihen/rosup/internal/state"
 )
 
-func Rollback(ctx context.Context, cfg *config.Config, name, toVersion string, opts Options) error {
+func Rollback(ctx context.Context, cfg *config.Config, name, toVersion, group string, opts Options) error {
 	if cfg == nil {
 		return errors.New("rollback: nil config")
 	}
@@ -32,9 +32,9 @@ func Rollback(ctx context.Context, cfg *config.Config, name, toVersion string, o
 	if err != nil {
 		return err
 	}
-	d, err := lookupDevice(devices, name)
+	d, err := inventory.Lookup(devices, group, name)
 	if err != nil {
-		return err
+		return fmt.Errorf("rollback: %w", err)
 	}
 
 	man, err := release.Load(cfg.PackageDir, toVersion)
@@ -173,13 +173,4 @@ func Rollback(ctx context.Context, cfg *config.Config, name, toVersion string, o
 	job.Status = state.StatusComplete
 	job.UpdatedAt = time.Now().UTC()
 	return state.Save(cfg.StateDir, job)
-}
-
-func lookupDevice(devices []inventory.Device, name string) (inventory.Device, error) {
-	for _, d := range devices {
-		if d.Name == name {
-			return d, nil
-		}
-	}
-	return inventory.Device{}, fmt.Errorf("rollback: unknown device %q", name)
 }

@@ -12,7 +12,7 @@ import (
 
 func TestRollbackRequiresToVersion(t *testing.T) {
 	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
-	err := upgrade.Rollback(context.Background(), cfg, "router-01", "", world.opts())
+	err := upgrade.Rollback(context.Background(), cfg, "router-01", "", "", world.opts())
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -26,11 +26,25 @@ func TestRollbackRequiresToVersion(t *testing.T) {
 
 func TestRollbackUnknownDevice(t *testing.T) {
 	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
-	err := upgrade.Rollback(context.Background(), cfg, "missing", current, world.opts())
+	err := upgrade.Rollback(context.Background(), cfg, "missing", current, "", world.opts())
 	if err == nil {
 		t.Fatal("expected error")
 	}
 	if !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("got %v", err)
+	}
+	if world.dialCount() != 0 {
+		t.Fatalf("dialed %d times", world.dialCount())
+	}
+}
+
+func TestRollbackWrongGroup(t *testing.T) {
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	err := upgrade.Rollback(context.Background(), cfg, "router-01", current, "edge", world.opts())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "not in group") {
 		t.Fatalf("got %v", err)
 	}
 	if world.dialCount() != 0 {
@@ -43,7 +57,7 @@ func TestRollbackRequiresCompleteLocalRelease(t *testing.T) {
 	sim := world.sim("router-01")
 	sim.version = target
 
-	err := upgrade.Rollback(context.Background(), cfg, "router-01", current, world.opts())
+	err := upgrade.Rollback(context.Background(), cfg, "router-01", current, "", world.opts())
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -64,7 +78,7 @@ func TestRollbackStagesCompleteLocalReleaseAndReboots(t *testing.T) {
 	sim := world.sim("router-01")
 	sim.version = target
 
-	if err := upgrade.Rollback(context.Background(), cfg, "router-01", current, world.opts()); err != nil {
+	if err := upgrade.Rollback(context.Background(), cfg, "router-01", current, "", world.opts()); err != nil {
 		t.Fatal(err)
 	}
 	got := sim.uploadedRemotes()
@@ -92,7 +106,7 @@ func TestRollbackVerifiesVersionAfterReconnect(t *testing.T) {
 	sim.version = target
 	sim.applyOnReboot = false
 
-	err := upgrade.Rollback(context.Background(), cfg, "router-01", current, world.opts())
+	err := upgrade.Rollback(context.Background(), cfg, "router-01", current, "", world.opts())
 	if err == nil {
 		t.Fatal("expected version mismatch error")
 	}
@@ -117,7 +131,7 @@ func TestRollbackUpdatesStateOnSuccess(t *testing.T) {
 	sim := world.sim("router-01")
 	sim.version = target
 
-	if err := upgrade.Rollback(context.Background(), cfg, "router-01", current, world.opts()); err != nil {
+	if err := upgrade.Rollback(context.Background(), cfg, "router-01", current, "", world.opts()); err != nil {
 		t.Fatal(err)
 	}
 	job, err := state.Load(cfg.StateDir, "router-01")

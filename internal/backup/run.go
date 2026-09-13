@@ -28,7 +28,7 @@ type Outcome struct {
 	Err    error
 }
 
-func Run(ctx context.Context, cfg *config.Config, group string, dial DialFunc, push PushFunc) ([]Outcome, error) {
+func Run(ctx context.Context, cfg *config.Config, group, name string, dial DialFunc, push PushFunc) ([]Outcome, error) {
 	if cfg == nil {
 		return nil, errors.New("backup: nil config")
 	}
@@ -43,9 +43,9 @@ func Run(ctx context.Context, cfg *config.Config, group string, dial DialFunc, p
 	if err != nil {
 		return nil, err
 	}
-	devices, err = filterGroup(devices, group)
+	devices, err = inventory.Select(devices, group, name)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("backup: %w", err)
 	}
 
 	outcomes := make([]Outcome, 0, len(devices))
@@ -105,20 +105,4 @@ func backupDevice(ctx context.Context, cfg *config.Config, d inventory.Device, d
 	}
 	defer func() { _ = client.Close() }()
 	return ExportAndBackup(ctx, cfg, d.Name, client)
-}
-
-func filterGroup(devices []inventory.Device, group string) ([]inventory.Device, error) {
-	if group == "" {
-		return devices, nil
-	}
-	var out []inventory.Device
-	for _, d := range devices {
-		if d.Group == group {
-			out = append(out, d)
-		}
-	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("backup: no devices in group %q", group)
-	}
-	return out, nil
 }

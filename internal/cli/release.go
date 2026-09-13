@@ -31,6 +31,13 @@ func loadConfig(cmd *cobra.Command) (*config.Config, error) {
 	return config.Load(config.ResolvePath(flagVal))
 }
 
+func optionalArg(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	return args[0]
+}
+
 func newReleaseSyncCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "sync",

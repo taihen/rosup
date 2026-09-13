@@ -7,14 +7,14 @@ import (
 
 func NewStatusCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "status",
+		Use:   "status [device]",
 		Short: "Show upgrade job progress from local state",
-		Args:  cobra.NoArgs,
+		Args:  cobra.MaximumNArgs(1),
 		RunE:  runStatus,
 	}
 }
 
-func runStatus(cmd *cobra.Command, _ []string) error {
+func runStatus(cmd *cobra.Command, args []string) error {
 	group, err := cmd.Flags().GetString("group")
 	if err != nil {
 		return err
@@ -23,13 +23,14 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	name := optionalArg(args)
 
 	cfg, err := loadConfig(cmd)
 	if err != nil {
 		return err
 	}
 
-	report, err := status.Run(cfg, group, release)
+	report, err := status.Run(cfg, group, name, release)
 	if err != nil {
 		return err
 	}

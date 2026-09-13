@@ -12,14 +12,14 @@ import (
 
 func NewUpgradeCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "upgrade",
-		Short: "Run the upgrade for a group",
-		Args:  cobra.NoArgs,
+		Use:   "upgrade [device]",
+		Short: "Run the upgrade for a device, group, or the whole fleet",
+		Args:  cobra.MaximumNArgs(1),
 		RunE:  runUpgrade,
 	}
 }
 
-func runUpgrade(cmd *cobra.Command, _ []string) error {
+func runUpgrade(cmd *cobra.Command, args []string) error {
 	version, err := cmd.Flags().GetString("release")
 	if err != nil {
 		return err
@@ -35,6 +35,7 @@ func runUpgrade(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	name := optionalArg(args)
 
 	cfg, err := loadConfig(cmd)
 	if err != nil {
@@ -53,7 +54,7 @@ func runUpgrade(cmd *cobra.Command, _ []string) error {
 		defer cancel()
 	}
 
-	return upgrade.Run(ctx, cfg, version, group, upgrade.Options{
+	return upgrade.Run(ctx, cfg, version, group, name, upgrade.Options{
 		Dial:   transport.Dial,
 		Out:    cmd.OutOrStdout(),
 		Resume: resume,

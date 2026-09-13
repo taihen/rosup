@@ -30,9 +30,9 @@ func NewBackupCmd() *cobra.Command {
 
 func newBackupRunCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "run",
+		Use:   "run [device]",
 		Short: "Export and backup devices; push text exports to ops git",
-		Args:  cobra.NoArgs,
+		Args:  cobra.MaximumNArgs(1),
 		RunE:  runBackupRun,
 	}
 }
@@ -46,7 +46,7 @@ func newBackupRestoreCmd() *cobra.Command {
 	}
 }
 
-func runBackupRun(cmd *cobra.Command, _ []string) error {
+func runBackupRun(cmd *cobra.Command, args []string) error {
 	cfg, err := loadConfig(cmd)
 	if err != nil {
 		return err
@@ -55,6 +55,7 @@ func runBackupRun(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	name := optionalArg(args)
 
 	unlock, err := lockfile.Acquire(cfg.LockPath)
 	if err != nil {
@@ -62,7 +63,7 @@ func runBackupRun(cmd *cobra.Command, _ []string) error {
 	}
 	defer func() { _ = unlock() }()
 
-	outcomes, err := backup.Run(cmd.Context(), cfg, group, transport.Dial, pushFleetBackups)
+	outcomes, err := backup.Run(cmd.Context(), cfg, group, name, transport.Dial, pushFleetBackups)
 	formatErr := backup.FormatOutcomes(cmd.OutOrStdout(), outcomes)
 	return errors.Join(err, formatErr)
 }
@@ -87,6 +88,10 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 	if path == "" {
 		return errors.New("backup restore: --file is required")
 	}
+	group, err := cmd.Flags().GetString("group")
+	if err != nil {
+		return err
+	}
 
 	cfg, err := loadConfig(cmd)
 	if err != nil {
@@ -98,20 +103,13 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = unlock() }()
 
-	name := args[0]
 	devices, err := inventory.Load(cfg)
 	if err != nil {
 		return err
 	}
-	var device *inventory.Device
-	for i := range devices {
-		if devices[i].Name == name {
-			device = &devices[i]
-			break
-		}
-	}
-	if device == nil {
-		return fmt.Errorf("backup restore: unknown device %q", name)
+	device, err := inventory.Lookup(devices, group, args[0])
+	if err != nil {
+		return fmt.Errorf("backup restore: %w", err)
 	}
 
 	port := device.Port

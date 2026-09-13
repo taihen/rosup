@@ -167,3 +167,41 @@ func sortDevices(devices []Device) {
 		return a.Name < b.Name
 	})
 }
+
+// Lookup returns the device with the given name. When group is set, the device must be in that group.
+func Lookup(devices []Device, group, name string) (Device, error) {
+	for _, d := range devices {
+		if d.Name != name {
+			continue
+		}
+		if group != "" && d.Group != group {
+			return Device{}, fmt.Errorf("device %q is not in group %q", name, group)
+		}
+		return d, nil
+	}
+	return Device{}, fmt.Errorf("unknown device %q", name)
+}
+
+// Select filters devices by optional group and name. When both are set, both must match (AND).
+func Select(devices []Device, group, name string) ([]Device, error) {
+	if name != "" {
+		d, err := Lookup(devices, group, name)
+		if err != nil {
+			return nil, err
+		}
+		return []Device{d}, nil
+	}
+	if group == "" {
+		return devices, nil
+	}
+	var out []Device
+	for _, d := range devices {
+		if d.Group == group {
+			out = append(out, d)
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no devices in group %q", group)
+	}
+	return out, nil
+}

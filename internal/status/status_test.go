@@ -42,7 +42,7 @@ devices:
 		t.Fatal(err)
 	}
 
-	report, err := status.Run(cfg, "", "")
+	report, err := status.Run(cfg, "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ devices:
 		}
 	}
 
-	report, err := status.Run(cfg, "radio", "6.49.21")
+	report, err := status.Run(cfg, "radio", "", "6.49.21")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,12 +93,105 @@ devices:
 		t.Fatalf("%+v", report.Devices)
 	}
 
-	report, err = status.Run(cfg, "", "6.49.21")
+	report, err = status.Run(cfg, "", "", "6.49.21")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(report.Devices) != 1 || report.Devices[0].Name != "edge-1" {
 		t.Fatalf("release filter: %+v", report.Devices)
+	}
+}
+
+func TestRunFiltersByName(t *testing.T) {
+	cfg := statusConfig(t, `
+devices:
+  - name: edge-1
+    address: 192.0.2.10
+    role: radio
+    group: radio
+    validation_profile: radio
+    order: 10
+  - name: core-1
+    address: 192.0.2.1
+    role: ospf
+    group: core-a
+    validation_profile: ospf
+    order: 10
+`)
+	for _, job := range []*state.DeviceJob{
+		{Device: "edge-1", Release: "6.49.21", Group: "radio", Status: state.StatusFailed, Stage: "REBOOT"},
+		{Device: "core-1", Release: "6.49.18", Group: "core-a", Status: state.StatusComplete, Stage: "COMPLETE"},
+	} {
+		if err := state.Save(cfg.StateDir, job); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	report, err := status.Run(cfg, "", "core-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Devices) != 1 || report.Devices[0].Name != "core-1" {
+		t.Fatalf("%+v", report.Devices)
+	}
+
+	report, err = status.Run(cfg, "core-a", "core-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Devices) != 1 || report.Devices[0].Name != "core-1" {
+		t.Fatalf("%+v", report.Devices)
+	}
+
+	_, err = status.Run(cfg, "radio", "core-1", "")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "not in group") {
+		t.Fatalf("got %v", err)
+	}
+
+	report, err = status.Run(cfg, "missing", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Devices) != 0 || len(report.Orphans) != 0 {
+		t.Fatalf("want empty report, got %+v", report)
+	}
+}
+
+func TestRunGroupListsOrphansWithoutInventoryMembers(t *testing.T) {
+	cfg := statusConfig(t, `
+devices:
+  - name: core-1
+    address: 192.0.2.1
+    role: ospf
+    group: core-a
+    validation_profile: ospf
+    order: 10
+`)
+	if err := state.EnsureSecureDir(cfg.StateDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Save(cfg.StateDir, &state.DeviceJob{
+		Device:  "gone-1",
+		Release: "6.49.21",
+		Group:   "legacy",
+		Status:  state.StatusFailed,
+		Stage:   "REBOOT",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := status.Run(cfg, "legacy", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Devices) != 0 {
+		t.Fatalf("devices %+v", report.Devices)
+	}
+	if len(report.Orphans) != 1 || report.Orphans[0].Name != "gone-1" {
+		t.Fatalf("orphans %+v", report.Orphans)
 	}
 }
 

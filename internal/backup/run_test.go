@@ -65,7 +65,7 @@ devices:
 		return nil
 	}
 
-	outcomes, err := backup.Run(context.Background(), cfg, "", dial, push)
+	outcomes, err := backup.Run(context.Background(), cfg, "", "", dial, push)
 	if err == nil {
 		t.Fatal("expected error for failed device")
 	}
@@ -124,7 +124,7 @@ devices:
 		return nil
 	}
 
-	outcomes, err := backup.Run(context.Background(), cfg, "core", dial, push)
+	outcomes, err := backup.Run(context.Background(), cfg, "core", "", dial, push)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,6 +139,55 @@ devices:
 	}
 	if len(dialed) != 1 || dialed[0] != "192.0.2.1" {
 		t.Fatalf("dialed %v", dialed)
+	}
+}
+
+func TestRunFiltersByName(t *testing.T) {
+	cfg := writeFleetEnv(t, `
+devices:
+  - name: core-1
+    address: 192.0.2.1
+    role: ospf
+    group: core
+    order: 1
+    validation_profile: ospf
+  - name: edge-1
+    address: 192.0.2.2
+    role: access
+    group: edge
+    order: 1
+    validation_profile: access
+`)
+
+	var dialed []string
+	dial := func(_ context.Context, _ config.SSHConfig, address string, _ int) (transport.Client, error) {
+		dialed = append(dialed, address)
+		return &fakeClient{export: "#\n"}, nil
+	}
+	push := func(_ context.Context, _ *config.Config, items []backup.FleetItem) error {
+		if len(items) != 1 || items[0].Device != "edge-1" {
+			t.Fatalf("items %+v", items)
+		}
+		return nil
+	}
+
+	outcomes, err := backup.Run(context.Background(), cfg, "", "edge-1", dial, push)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcomes[0].Device != "edge-1" || outcomes[0].Err != nil {
+		t.Fatalf("outcome[0] %+v", outcomes[0])
+	}
+	if len(dialed) != 1 || dialed[0] != "192.0.2.2" {
+		t.Fatalf("dialed %v", dialed)
+	}
+
+	_, err = backup.Run(context.Background(), cfg, "core", "edge-1", dial, push)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "not in group") {
+		t.Fatalf("got %v", err)
 	}
 }
 
@@ -159,7 +208,7 @@ devices:
 		return errors.New("push failed")
 	}
 
-	outcomes, err := backup.Run(context.Background(), cfg, "", dial, push)
+	outcomes, err := backup.Run(context.Background(), cfg, "", "", dial, push)
 	if err == nil || !strings.Contains(err.Error(), "push failed") {
 		t.Fatalf("got %v", err)
 	}
@@ -200,7 +249,7 @@ devices:
 		return errors.New("push failed")
 	}
 
-	_, err := backup.Run(context.Background(), cfg, "", dial, push)
+	_, err := backup.Run(context.Background(), cfg, "", "", dial, push)
 	if err == nil {
 		t.Fatal("expected error")
 	}

@@ -391,6 +391,66 @@ func TestVerifyUnknownDevice(t *testing.T) {
 	}
 }
 
+func TestVerifyWrongGroup(t *testing.T) {
+	configPath, _ := writeCLIConfig(t)
+	writeCLIInventory(t, configPath, `devices:
+  - name: router-01
+    address: 192.0.2.1
+    role: ospf
+    group: core
+    order: 1
+    validation_profile: ospf
+`)
+
+	_, _, err := execute(t, "--config", configPath, "--group", "edge", "verify", "router-01")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "not in group") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestDiscoverAcceptsDeviceArg(t *testing.T) {
+	configPath, _ := writeCLIConfig(t)
+	writeCLIInventory(t, configPath, `devices:
+  - name: router-01
+    address: 192.0.2.1
+    role: ospf
+    group: core
+    order: 1
+    validation_profile: ospf
+`)
+
+	_, _, err := execute(t, "--config", configPath, "discover", "missing-device")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "unknown device") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestStatusUnknownGroupEmpty(t *testing.T) {
+	configPath, _ := writeCLIConfig(t)
+	writeCLIInventory(t, configPath, `devices:
+  - name: router-01
+    address: 192.0.2.1
+    role: ospf
+    group: core
+    order: 1
+    validation_profile: ospf
+`)
+
+	out, _, err := execute(t, "--config", configPath, "--group", "missing", "status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "devices: 0") {
+		t.Fatalf("got %q", out)
+	}
+}
+
 func TestPersistentFlagsRegistered(t *testing.T) {
 	cmd := newRootCmd()
 	for _, name := range []string{"config", "release", "group", "to-version", "file", "resume"} {

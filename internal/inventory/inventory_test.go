@@ -510,3 +510,82 @@ devices:
 		t.Fatalf("got %v", err)
 	}
 }
+
+func sampleDevices() []inventory.Device {
+	return []inventory.Device{
+		{Name: "core-1", Group: "core", Order: 10},
+		{Name: "core-2", Group: "core", Order: 20},
+		{Name: "edge-1", Group: "edge", Order: 10},
+	}
+}
+
+func TestSelectAllWhenUnset(t *testing.T) {
+	devices := sampleDevices()
+	got, err := inventory.Select(devices, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("len %d", len(got))
+	}
+}
+
+func TestSelectByGroup(t *testing.T) {
+	got, err := inventory.Select(sampleDevices(), "core", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Name != "core-1" || got[1].Name != "core-2" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestSelectUnknownGroup(t *testing.T) {
+	_, err := inventory.Select(sampleDevices(), "missing", "")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), `no devices in group "missing"`) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestSelectByName(t *testing.T) {
+	got, err := inventory.Select(sampleDevices(), "", "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Name != "edge-1" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestSelectUnknownDevice(t *testing.T) {
+	_, err := inventory.Select(sampleDevices(), "", "nope")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), `unknown device "nope"`) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestSelectNameAndGroup(t *testing.T) {
+	got, err := inventory.Select(sampleDevices(), "core", "core-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Name != "core-1" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestSelectNameWrongGroup(t *testing.T) {
+	_, err := inventory.Select(sampleDevices(), "edge", "core-1")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), `device "core-1" is not in group "edge"`) {
+		t.Fatalf("got %v", err)
+	}
+}

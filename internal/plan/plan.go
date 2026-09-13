@@ -16,7 +16,7 @@ import (
 	"github.com/taihen/rosup/internal/state"
 )
 
-type DiscoverFunc func(ctx context.Context, cfg *config.Config, group string) ([]discover.Result, error)
+type DiscoverFunc func(ctx context.Context, cfg *config.Config, group, name string) ([]discover.Result, error)
 
 type Report struct {
 	Release string
@@ -30,7 +30,7 @@ type Device struct {
 	Err     error
 }
 
-func Run(ctx context.Context, cfg *config.Config, version, group string, discoverFn DiscoverFunc) (*Report, error) {
+func Run(ctx context.Context, cfg *config.Config, version, group, name string, discoverFn DiscoverFunc) (*Report, error) {
 	if cfg == nil {
 		return nil, errors.New("plan: nil config")
 	}
@@ -46,7 +46,7 @@ func Run(ctx context.Context, cfg *config.Config, version, group string, discove
 		return nil, err
 	}
 
-	results, err := discoverFn(ctx, cfg, group)
+	results, err := discoverFn(ctx, cfg, group, name)
 	if err != nil {
 		return nil, err
 	}

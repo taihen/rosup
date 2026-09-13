@@ -26,13 +26,22 @@ type Device struct {
 	UpdatedAt time.Time
 }
 
-func Run(cfg *config.Config, group, release string) (*Report, error) {
+func Run(cfg *config.Config, group, name, release string) (*Report, error) {
 	if cfg == nil {
 		return nil, errors.New("status: nil config")
 	}
-	devices, err := inventory.Load(cfg)
+	all, err := inventory.Load(cfg)
 	if err != nil {
 		return nil, err
+	}
+	var devices []inventory.Device
+	if name != "" {
+		devices, err = inventory.Select(all, group, name)
+		if err != nil {
+			return nil, fmt.Errorf("status: %w", err)
+		}
+	} else {
+		devices = filterGroupSoft(all, group)
 	}
 	jobs, err := state.List(cfg.StateDir)
 	if err != nil {
@@ -43,13 +52,8 @@ func Run(cfg *config.Config, group, release string) (*Report, error) {
 		byName[job.Device] = job
 	}
 
-	inInventory := make(map[string]struct{}, len(devices))
 	report := &Report{Devices: make([]Device, 0, len(devices))}
 	for _, d := range devices {
-		inInventory[d.Name] = struct{}{}
-		if group != "" && d.Group != group {
-			continue
-		}
 		job := byName[d.Name]
 		if release != "" && (job == nil || job.Release != release) {
 			continue
@@ -66,6 +70,14 @@ func Run(cfg *config.Config, group, release string) (*Report, error) {
 			row.UpdatedAt = job.UpdatedAt
 		}
 		report.Devices = append(report.Devices, row)
+	}
+	if name != "" {
+		return report, nil
+	}
+
+	inInventory := make(map[string]struct{}, len(all))
+	for _, d := range all {
+		inInventory[d.Name] = struct{}{}
 	}
 	for _, job := range jobs {
 		if _, ok := inInventory[job.Device]; ok {
@@ -88,6 +100,20 @@ func Run(cfg *config.Config, group, release string) (*Report, error) {
 		})
 	}
 	return report, nil
+}
+
+// filterGroupSoft returns devices in group, or all when group is empty. Empty match is OK.
+func filterGroupSoft(devices []inventory.Device, group string) []inventory.Device {
+	if group == "" {
+		return devices
+	}
+	var out []inventory.Device
+	for _, d := range devices {
+		if d.Group == group {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 func Format(w io.Writer, r *Report) error {

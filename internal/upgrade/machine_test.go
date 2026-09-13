@@ -32,7 +32,7 @@ const (
 
 func TestRunRequiresRelease(t *testing.T) {
 	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
-	err := upgrade.Run(context.Background(), cfg, "", "core-a", world.opts())
+	err := upgrade.Run(context.Background(), cfg, "", "core-a", "", world.opts())
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -44,11 +44,44 @@ func TestRunRequiresRelease(t *testing.T) {
 	}
 }
 
+func TestRunFiltersByName(t *testing.T) {
+	cfg, world := setup(t,
+		device("router-01", "core-a", 10, nil),
+		device("router-02", "core-a", 20, nil),
+	)
+	if err := upgrade.Run(context.Background(), cfg, target, "", "router-01", world.opts()); err != nil {
+		t.Fatal(err)
+	}
+	if world.dialCount() == 0 {
+		t.Fatal("expected dials for router-01")
+	}
+	if _, err := state.Load(cfg.StateDir, "router-01"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.Load(cfg.StateDir, "router-02"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("router-02 should be untouched: %v", err)
+	}
+}
+
+func TestRunNameWrongGroup(t *testing.T) {
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	err := upgrade.Run(context.Background(), cfg, target, "edge", "router-01", world.opts())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "not in group") {
+		t.Fatalf("got %v", err)
+	}
+	if world.dialCount() != 0 {
+		t.Fatalf("dialed %d times", world.dialCount())
+	}
+}
+
 func TestHappyPathReachesCompleteWithoutRouterBOOT(t *testing.T) {
 	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
 	sim := world.sim("router-01")
 
-	if err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts()); err != nil {
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", "", world.opts()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -141,7 +174,7 @@ func TestNonRouterBoardSkipsRouterBOOTStages(t *testing.T) {
 	opts := world.opts()
 	opts.Out = &output
 
-	if err := upgrade.Run(context.Background(), cfg, target, "core-a", opts); err != nil {
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", "", opts); err != nil {
 		t.Fatal(err)
 	}
 
@@ -172,7 +205,7 @@ func TestEqualFirmwareSkipsRouterBOOTStages(t *testing.T) {
 	sim.currentFirmware = "6.49.21"
 	sim.upgradeFirmware = "6.49.21"
 
-	if err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts()); err != nil {
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", "", world.opts()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -200,7 +233,7 @@ func TestNewerFirmwareRunsRouterBOOTThenRevalidates(t *testing.T) {
 	sim.currentFirmware = "6.49.13"
 	sim.upgradeFirmware = "6.49.21"
 
-	if err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts()); err != nil {
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", "", world.opts()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -243,7 +276,7 @@ func TestValidateRoleUsesProfileTimeoutNotReconnectBudget(t *testing.T) {
 	cfg.Reconnect.Timeout = 3 * time.Minute
 	writeProfile(t, cfg, "ospf", "convergence_timeout: 10m\n")
 
-	if err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts()); err != nil {
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", "", world.opts()); err != nil {
 		t.Fatal(err)
 	}
 	if world.clock.now.Sub(world.clock.start) != 10*time.Minute {
@@ -274,7 +307,7 @@ func TestStagePackagesUploadsOnlyInstalledPackageNPKs(t *testing.T) {
 		Size:         1000,
 	})
 
-	if err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts()); err != nil {
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", "", world.opts()); err != nil {
 		t.Fatal(err)
 	}
 	got := world.sim("router-01").uploadedRemotes()
@@ -287,7 +320,7 @@ func TestStagePackagesAcceptsRouterOSArchPackageName(t *testing.T) {
 	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
 	world.sim("router-01").packages = []string{"routeros-arm", "wireless"}
 
-	if err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts()); err != nil {
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", "", world.opts()); err != nil {
 		t.Fatal(err)
 	}
 	got := world.sim("router-01").uploadedRemotes()
@@ -298,7 +331,7 @@ func TestStagePackagesAcceptsRouterOSArchPackageName(t *testing.T) {
 
 func TestCompleteSameReleaseSkipsSecondUpgrade(t *testing.T) {
 	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
-	if err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts()); err != nil {
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", "", world.opts()); err != nil {
 		t.Fatal(err)
 	}
 	sim := world.sim("router-01")
@@ -310,7 +343,7 @@ func TestCompleteSameReleaseSkipsSecondUpgrade(t *testing.T) {
 		t.Fatal("expected first-run dials")
 	}
 
-	if err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts()); err != nil {
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", "", world.opts()); err != nil {
 		t.Fatal(err)
 	}
 	if len(sim.uploads) != 0 {
@@ -331,7 +364,7 @@ func TestAlreadyOnReleaseSkipsPackagesButUpdatesRouterBOOT(t *testing.T) {
 	sim.currentFirmware = "6.45.8"
 	sim.upgradeFirmware = "6.49.21"
 
-	if err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts()); err != nil {
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", "", world.opts()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -372,7 +405,7 @@ func TestAlreadyOnReleaseDoesNotBlockLaterDevices(t *testing.T) {
 	first.currentFirmware = "6.49.21"
 	first.upgradeFirmware = "6.49.21"
 
-	if err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts()); err != nil {
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", "", world.opts()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -402,7 +435,7 @@ func TestAlreadyOnReleasePlainProgress(t *testing.T) {
 	opts := world.opts()
 	opts.Out = &buf
 
-	if err := upgrade.Run(context.Background(), cfg, target, "core-a", opts); err != nil {
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", "", opts); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
@@ -429,7 +462,7 @@ func TestHappyPathPlainProgress(t *testing.T) {
 	opts := world.opts()
 	opts.Out = &buf
 
-	if err := upgrade.Run(context.Background(), cfg, target, "core-a", opts); err != nil {
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", "", opts); err != nil {
 		t.Fatal(err)
 	}
 	want := "" +
@@ -459,13 +492,13 @@ func TestHappyPathPlainProgress(t *testing.T) {
 
 func TestCompleteJobPlainProgressIsSingleSkip(t *testing.T) {
 	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
-	if err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts()); err != nil {
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", "", world.opts()); err != nil {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
 	opts := world.opts()
 	opts.Out = &buf
-	if err := upgrade.Run(context.Background(), cfg, target, "core-a", opts); err != nil {
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", "", opts); err != nil {
 		t.Fatal(err)
 	}
 	want := "-  router-01  already 6.49.21\n"
@@ -500,7 +533,7 @@ func TestReconnectTimeoutPlainProgress(t *testing.T) {
 	opts.Out = &buf
 	opts.Resume = true
 
-	err := upgrade.Run(context.Background(), cfg, target, "core-a", opts)
+	err := upgrade.Run(context.Background(), cfg, target, "core-a", "", opts)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -560,7 +593,7 @@ func TestResumeFromStage(t *testing.T) {
 
 			opts := world.opts()
 			opts.Resume = true
-			if err := upgrade.Run(context.Background(), cfg, target, "core-a", opts); err != nil {
+			if err := upgrade.Run(context.Background(), cfg, target, "core-a", "", opts); err != nil {
 				t.Fatal(err)
 			}
 
@@ -604,7 +637,7 @@ func TestIncompleteJobRequiresResume(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts())
+	err := upgrade.Run(context.Background(), cfg, target, "core-a", "", world.opts())
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -632,7 +665,7 @@ func TestResumeRefusesCrossRelease(t *testing.T) {
 
 	opts := world.opts()
 	opts.Resume = true
-	err := upgrade.Run(context.Background(), cfg, target, "core-a", opts)
+	err := upgrade.Run(context.Background(), cfg, target, "core-a", "", opts)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -690,7 +723,7 @@ func TestResumeSkipsPendingDevices(t *testing.T) {
 
 	opts := world.opts()
 	opts.Resume = true
-	if err := upgrade.Run(context.Background(), cfg, target, "core-a", opts); err != nil {
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", "", opts); err != nil {
 		t.Fatal(err)
 	}
 
@@ -747,7 +780,7 @@ func TestResumeUsesPersistedExportForAudit(t *testing.T) {
 		pushed = artifacts.Export
 		return nil
 	}
-	if err := upgrade.Run(context.Background(), cfg, target, "core-a", opts); err != nil {
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", "", opts); err != nil {
 		t.Fatal(err)
 	}
 	if pushed != exportBody {
@@ -769,7 +802,7 @@ func TestInProgressJobRequiresResume(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts())
+	err := upgrade.Run(context.Background(), cfg, target, "core-a", "", world.opts())
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -803,7 +836,7 @@ func TestMissingExportKeepsJobResumable(t *testing.T) {
 
 	opts := world.opts()
 	opts.Resume = true
-	err := upgrade.Run(context.Background(), cfg, target, "core-a", opts)
+	err := upgrade.Run(context.Background(), cfg, target, "core-a", "", opts)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -833,7 +866,7 @@ func TestFirstFailedStopsTheGroup(t *testing.T) {
 	)
 	world.sim("router-01").dialErr = errors.New("ssh down")
 
-	err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts())
+	err := upgrade.Run(context.Background(), cfg, target, "core-a", "", world.opts())
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -863,7 +896,7 @@ func TestDependsOnMustAlreadyBeComplete(t *testing.T) {
 		device("router-02", "edge", 20, nil),
 	)
 
-	err := upgrade.Run(context.Background(), cfg, target, "edge", world.opts())
+	err := upgrade.Run(context.Background(), cfg, target, "edge", "", world.opts())
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -910,7 +943,7 @@ func TestReconnectTimeoutMarksFailedWithoutDowngrade(t *testing.T) {
 
 	opts := world.opts()
 	opts.Resume = true
-	err := upgrade.Run(context.Background(), cfg, target, "core-a", opts)
+	err := upgrade.Run(context.Background(), cfg, target, "core-a", "", opts)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -944,7 +977,7 @@ func TestReconnectSucceedsOnThirdAttempt(t *testing.T) {
 	sim := world.sim("router-01")
 	sim.reconnectFailsLeft = 2
 
-	if err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts()); err != nil {
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", "", world.opts()); err != nil {
 		t.Fatal(err)
 	}
 	job, err := state.Load(cfg.StateDir, "router-01")
@@ -966,7 +999,7 @@ func TestAuditPushFailureLeavesResumable(t *testing.T) {
 		return errors.New("push denied")
 	}
 
-	err := upgrade.Run(context.Background(), cfg, target, "core-a", opts)
+	err := upgrade.Run(context.Background(), cfg, target, "core-a", "", opts)
 	if err == nil {
 		t.Fatal("expected audit error")
 	}
@@ -987,7 +1020,7 @@ func TestAuditPushFailureLeavesResumable(t *testing.T) {
 
 	opts.Push = nopPush
 	opts.Resume = true
-	if err := upgrade.Run(context.Background(), cfg, target, "core-a", opts); err != nil {
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", "", opts); err != nil {
 		t.Fatal(err)
 	}
 	job, err = state.Load(cfg.StateDir, "router-01")
@@ -1004,7 +1037,7 @@ func TestValidateRoleRequiresTargetVersionAndPackages(t *testing.T) {
 	sim := world.sim("router-01")
 	sim.applyOnReboot = false
 
-	err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts())
+	err := upgrade.Run(context.Background(), cfg, target, "core-a", "", world.opts())
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -1030,7 +1063,7 @@ func TestGuardedDowngradeOnValidationFailureWhenSSHUp(t *testing.T) {
 	sim := world.sim("router-01")
 	sim.failValidateVersion = true
 
-	err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts())
+	err := upgrade.Run(context.Background(), cfg, target, "core-a", "", world.opts())
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -1081,7 +1114,7 @@ func TestNoDowngradeWhenValidationSSHIsDown(t *testing.T) {
 	sim := world.sim("router-01")
 	sim.failValidateSSH = true
 
-	err := upgrade.Run(context.Background(), cfg, target, "core-a", world.opts())
+	err := upgrade.Run(context.Background(), cfg, target, "core-a", "", world.opts())
 	if err == nil {
 		t.Fatal("expected error")
 	}
