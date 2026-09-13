@@ -209,6 +209,8 @@ Prove SSH once:
 ```bash
 rosup discover
 rosup discover --group GROUP
+rosup discover DEVICE
+rosup discover DEVICE --group GROUP
 ```
 
 Each Long-term release:
@@ -216,7 +218,10 @@ Each Long-term release:
 ```bash
 rosup release sync
 rosup plan --release VERSION
+rosup plan --release VERSION DEVICE
 rosup upgrade --release VERSION --group GROUP
+rosup upgrade --release VERSION DEVICE
+rosup upgrade --release VERSION DEVICE --group GROUP
 ```
 
 `plan` prints the readiness report on stdout. If any host is blocked (disk, missing packages, unmet `depends_on`, or unsupported), it exits non-zero with a short counts-only error on stderr (host details stay on stdout).
@@ -240,13 +245,18 @@ Only one controller may run. A second instance fails until the lock is released.
 rosup pull
 rosup status
 rosup status --group GROUP --release VERSION
+rosup status DEVICE
 rosup verify DEVICE
+rosup verify DEVICE --group GROUP
 rosup upgrade --release VERSION --group GROUP --resume
 rosup rollback DEVICE --to-version VERSION
 rosup backup run
 rosup backup run --group GROUP
+rosup backup run DEVICE
 rosup backup restore DEVICE --file PATH
 ```
+
+A device name selects one host. With `--group`, both must match (the device must be in that group). `status --group` still lists orphan jobs for that group even when inventory has no members there; an unknown group with no orphans prints an empty report.
 
 `rosup pull` fetches `ops.remote` (with prune), requires the current branch to track `origin`, then cleans untracked paths and hard-resets to that tip. Uncommitted edits, untracked files, unpushed local commits, and other local-only worktree files are discarded. This is not `git pull`: remote always wins. Soft refreshes inside `backup run` / upgrade audit pushes still use a normal fast-forward pull and do not discard local commits. If pull fails after the clean step, re-run it; do not hand-edit the checkout to recover.
 

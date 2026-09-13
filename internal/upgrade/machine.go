@@ -77,7 +77,7 @@ func (realClock) Now() time.Time { return time.Now() }
 
 func (realClock) Sleep(d time.Duration) { time.Sleep(d) }
 
-func Run(ctx context.Context, cfg *config.Config, version, group string, opts Options) error {
+func Run(ctx context.Context, cfg *config.Config, version, group, name string, opts Options) error {
 	if cfg == nil {
 		return errors.New("upgrade: nil config")
 	}
@@ -94,9 +94,9 @@ func Run(ctx context.Context, cfg *config.Config, version, group string, opts Op
 	if err != nil {
 		return err
 	}
-	devices, err = filterGroup(devices, group)
+	devices, err = inventory.Select(devices, group, name)
 	if err != nil {
-		return err
+		return fmt.Errorf("upgrade: %w", err)
 	}
 
 	names := make([]string, len(devices))
@@ -816,22 +816,6 @@ func packagesToStage(facts discover.Facts, man release.Manifest) ([]release.File
 			return nil, fmt.Errorf("missing package %s", p.Name)
 		}
 		out = append(out, f)
-	}
-	return out, nil
-}
-
-func filterGroup(devices []inventory.Device, group string) ([]inventory.Device, error) {
-	if group == "" {
-		return devices, nil
-	}
-	var out []inventory.Device
-	for _, d := range devices {
-		if d.Group == group {
-			out = append(out, d)
-		}
-	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("upgrade: no devices in group %q", group)
 	}
 	return out, nil
 }

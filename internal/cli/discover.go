@@ -9,14 +9,14 @@ import (
 
 func NewDiscoverCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "discover",
+		Use:   "discover [device]",
 		Short: "Read-only facts from a device",
-		Args:  cobra.NoArgs,
+		Args:  cobra.MaximumNArgs(1),
 		RunE:  runDiscover,
 	}
 }
 
-func runDiscover(cmd *cobra.Command, _ []string) error {
+func runDiscover(cmd *cobra.Command, args []string) error {
 	cfg, err := loadConfig(cmd)
 	if err != nil {
 		return err
@@ -25,6 +25,7 @@ func runDiscover(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	name := optionalArg(args)
 
 	unlock, err := lockfile.Acquire(cfg.LockPath)
 	if err != nil {
@@ -32,7 +33,7 @@ func runDiscover(cmd *cobra.Command, _ []string) error {
 	}
 	defer func() { _ = unlock() }()
 
-	results, err := discover.Run(cmd.Context(), cfg, group, transport.Dial)
+	results, err := discover.Run(cmd.Context(), cfg, group, name, transport.Dial)
 	if err != nil {
 		return err
 	}

@@ -21,7 +21,7 @@ import (
 
 func TestRunRequiresRelease(t *testing.T) {
 	called := false
-	_, err := plan.Run(context.Background(), &config.Config{PackageDir: t.TempDir()}, "", "core-a", func(context.Context, *config.Config, string) ([]discover.Result, error) {
+	_, err := plan.Run(context.Background(), &config.Config{PackageDir: t.TempDir()}, "", "core-a", "", func(context.Context, *config.Config, string, string) ([]discover.Result, error) {
 		called = true
 		return nil, nil
 	})
@@ -39,7 +39,7 @@ func TestRunRequiresRelease(t *testing.T) {
 func TestRunMissingManifestDoesNotDiscover(t *testing.T) {
 	cfg := testConfig(t)
 	called := false
-	_, err := plan.Run(context.Background(), cfg, "6.49.21", "", func(context.Context, *config.Config, string) ([]discover.Result, error) {
+	_, err := plan.Run(context.Background(), cfg, "6.49.21", "", "", func(context.Context, *config.Config, string, string) ([]discover.Result, error) {
 		called = true
 		return nil, nil
 	})
@@ -57,7 +57,7 @@ func TestRunMissingManifestDoesNotDiscover(t *testing.T) {
 func TestRunRejectsUnsafeRelease(t *testing.T) {
 	cfg := testConfig(t)
 	called := false
-	_, err := plan.Run(context.Background(), cfg, "../etc", "", func(context.Context, *config.Config, string) ([]discover.Result, error) {
+	_, err := plan.Run(context.Background(), cfg, "../etc", "", "", func(context.Context, *config.Config, string, string) ([]discover.Result, error) {
 		called = true
 		return nil, nil
 	})
@@ -75,9 +75,10 @@ func TestRunRejectsUnsafeRelease(t *testing.T) {
 func TestRunPassesGroupToDiscover(t *testing.T) {
 	cfg := testConfig(t)
 	writeManifest(t, cfg, manifest(npk("routeros", "arm", 1000)))
-	var gotGroup string
-	_, err := plan.Run(context.Background(), cfg, "6.49.21", "core-a", func(_ context.Context, _ *config.Config, group string) ([]discover.Result, error) {
+	var gotGroup, gotName string
+	_, err := plan.Run(context.Background(), cfg, "6.49.21", "core-a", "router-01", func(_ context.Context, _ *config.Config, group, name string) ([]discover.Result, error) {
 		gotGroup = group
+		gotName = name
 		return nil, nil
 	})
 	if err != nil {
@@ -85,6 +86,9 @@ func TestRunPassesGroupToDiscover(t *testing.T) {
 	}
 	if gotGroup != "core-a" {
 		t.Fatalf("group %q", gotGroup)
+	}
+	if gotName != "router-01" {
+		t.Fatalf("name %q", gotName)
 	}
 }
 
@@ -94,7 +98,7 @@ func TestRunReportsReadyGroup(t *testing.T) {
 		npk("routeros", "arm", 1000),
 		npk("wireless", "arm", 1000),
 	))
-	report, err := plan.Run(context.Background(), cfg, "6.49.21", "", fakeDiscover(
+	report, err := plan.Run(context.Background(), cfg, "6.49.21", "", "", fakeDiscover(
 		result("router-01", "ospf", 10, armFacts("6.49.18", "4212.0KiB", "routeros", "wireless")),
 	))
 	if err != nil {
@@ -132,7 +136,7 @@ func TestRunReportsReadyWhenDevicePrintsRouterOSArchName(t *testing.T) {
 				npk("routeros", tc.arch, 1000),
 				npk("wireless", tc.arch, 1000),
 			))
-			report, err := plan.Run(context.Background(), cfg, "6.49.21", "", fakeDiscover(
+			report, err := plan.Run(context.Background(), cfg, "6.49.21", "", "", fakeDiscover(
 				result(tc.device, tc.role, 0, archFacts(tc.arch, "6.49.15", "107.0MiB", "routeros-"+tc.arch, "wireless")),
 			))
 			if err != nil {
@@ -154,7 +158,7 @@ func TestRunMissingPackagesFailsPreflight(t *testing.T) {
 	writeManifest(t, cfg, manifest(
 		npk("routeros", "arm", 1000),
 	))
-	report, err := plan.Run(context.Background(), cfg, "6.49.21", "edge", fakeDiscover(
+	report, err := plan.Run(context.Background(), cfg, "6.49.21", "edge", "", fakeDiscover(
 		result("router-01", "ospf", 10, armFacts("6.49.18", "4212.0KiB", "routeros")),
 		result("switch-01", "switch", 20, armFacts("6.49.18", "4212.0KiB", "routeros", "wireless")),
 	))
@@ -192,7 +196,7 @@ func TestRunDiskPreflightFailsWithNoMissing(t *testing.T) {
 		npk("routeros", "arm", 3<<20),
 		npk("wireless", "arm", 2<<20),
 	))
-	report, err := plan.Run(context.Background(), cfg, "6.49.21", "", fakeDiscover(
+	report, err := plan.Run(context.Background(), cfg, "6.49.21", "", "", fakeDiscover(
 		result("router-01", "ospf", 10, armFacts("6.49.18", "4212.0KiB", "routeros", "wireless")),
 	))
 	if err != nil {
@@ -231,7 +235,7 @@ func TestRunSkipsDiskPreflightWhenAlreadyOnRelease(t *testing.T) {
 		npk("routeros", "mipsbe", 3<<20),
 		npk("wireless", "mipsbe", 2<<20),
 	))
-	report, err := plan.Run(context.Background(), cfg, "6.49.21", "", fakeDiscover(
+	report, err := plan.Run(context.Background(), cfg, "6.49.21", "", "", fakeDiscover(
 		result("boa", "access", 0, armFacts("6.49.21", "1916.0KiB", "routeros-arm", "wireless")),
 		result("SAUZA2", "radio", 0, archFacts("mipsbe", "6.49.15", "107.0MiB", "routeros-mipsbe", "wireless")),
 	))
@@ -351,7 +355,7 @@ func TestRunEmptyGroupDiscoversAll(t *testing.T) {
 	cfg := testConfig(t)
 	writeManifest(t, cfg, manifest(npk("routeros", "arm", 1000)))
 	var gotGroup string
-	_, err := plan.Run(context.Background(), cfg, "6.49.21", "", func(_ context.Context, _ *config.Config, group string) ([]discover.Result, error) {
+	_, err := plan.Run(context.Background(), cfg, "6.49.21", "", "", func(_ context.Context, _ *config.Config, group, name string) ([]discover.Result, error) {
 		gotGroup = group
 		return nil, nil
 	})
@@ -367,7 +371,7 @@ func TestRunDependsSatisfiedByCompleteJob(t *testing.T) {
 	cfg := testConfig(t)
 	writeReadyArmManifest(t, cfg)
 	saveCompleteJob(t, cfg, "core-1", "6.49.21")
-	report, err := plan.Run(context.Background(), cfg, "6.49.21", "edge", fakeDiscover(
+	report, err := plan.Run(context.Background(), cfg, "6.49.21", "edge", "", fakeDiscover(
 		resultDeps("edge-1", "ospf", 10, []string{"core-1"}, armFacts("6.49.18", "4212.0KiB", "routeros", "wireless")),
 	))
 	if err != nil {
@@ -385,7 +389,7 @@ func TestRunDependsSatisfiedByCompleteJob(t *testing.T) {
 func TestRunDependsBlockedWhenDepMissingFromPlanAndState(t *testing.T) {
 	cfg := testConfig(t)
 	writeReadyArmManifest(t, cfg)
-	report, err := plan.Run(context.Background(), cfg, "6.49.21", "edge", fakeDiscover(
+	report, err := plan.Run(context.Background(), cfg, "6.49.21", "edge", "", fakeDiscover(
 		resultDeps("edge-1", "ospf", 10, []string{"core-1"}, armFacts("6.49.18", "4212.0KiB", "routeros", "wireless")),
 	))
 	if err != nil {
@@ -409,7 +413,7 @@ func TestRunDependsBlockedWhenDepMissingFromPlanAndState(t *testing.T) {
 func TestRunDependsSatisfiedWhenDepEarlierInSamePlan(t *testing.T) {
 	cfg := testConfig(t)
 	writeReadyArmManifest(t, cfg)
-	report, err := plan.Run(context.Background(), cfg, "6.49.21", "", fakeDiscover(
+	report, err := plan.Run(context.Background(), cfg, "6.49.21", "", "", fakeDiscover(
 		resultDeps("core-1", "ospf", 10, nil, armFacts("6.49.18", "4212.0KiB", "routeros", "wireless")),
 		resultDeps("edge-1", "ospf", 20, []string{"core-1"}, armFacts("6.49.18", "4212.0KiB", "routeros", "wireless")),
 	))
@@ -431,7 +435,7 @@ func TestRunDependsSatisfiedWhenDepEarlierInSamePlan(t *testing.T) {
 func TestRunDependsBlockedWhenDepLaterInSamePlan(t *testing.T) {
 	cfg := testConfig(t)
 	writeReadyArmManifest(t, cfg)
-	report, err := plan.Run(context.Background(), cfg, "6.49.21", "", fakeDiscover(
+	report, err := plan.Run(context.Background(), cfg, "6.49.21", "", "", fakeDiscover(
 		resultDeps("edge-1", "ospf", 10, []string{"core-1"}, armFacts("6.49.18", "4212.0KiB", "routeros", "wireless")),
 		resultDeps("core-1", "ospf", 20, nil, armFacts("6.49.18", "4212.0KiB", "routeros", "wireless")),
 	))
@@ -453,7 +457,7 @@ func TestRunDependsBlockedWhenDepLaterInSamePlan(t *testing.T) {
 func TestRunDependsSkippedWhenAlreadyOnRelease(t *testing.T) {
 	cfg := testConfig(t)
 	writeReadyArmManifest(t, cfg)
-	report, err := plan.Run(context.Background(), cfg, "6.49.21", "edge", fakeDiscover(
+	report, err := plan.Run(context.Background(), cfg, "6.49.21", "edge", "", fakeDiscover(
 		resultDeps("edge-1", "ospf", 10, []string{"core-1"}, armFacts("6.49.21", "1916.0KiB", "routeros", "wireless")),
 	))
 	if err != nil {
@@ -480,7 +484,7 @@ func TestRunDependsDoesNotOverwriteDiskPreflight(t *testing.T) {
 		npk("routeros", "arm", 3<<20),
 		npk("wireless", "arm", 2<<20),
 	))
-	report, err := plan.Run(context.Background(), cfg, "6.49.21", "edge", fakeDiscover(
+	report, err := plan.Run(context.Background(), cfg, "6.49.21", "edge", "", fakeDiscover(
 		resultDeps("edge-1", "ospf", 10, []string{"core-1"}, armFacts("6.49.18", "4212.0KiB", "routeros", "wireless")),
 	))
 	if err != nil {
@@ -558,7 +562,7 @@ func writeReadyArmManifest(t *testing.T, cfg *config.Config) {
 }
 
 func fakeDiscover(results ...discover.Result) plan.DiscoverFunc {
-	return func(context.Context, *config.Config, string) ([]discover.Result, error) {
+	return func(context.Context, *config.Config, string, string) ([]discover.Result, error) {
 		return results, nil
 	}
 }

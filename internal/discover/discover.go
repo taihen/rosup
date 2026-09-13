@@ -30,7 +30,7 @@ type Result struct {
 	Facts  Facts
 }
 
-func Run(ctx context.Context, cfg *config.Config, group string, dial DialFunc) ([]Result, error) {
+func Run(ctx context.Context, cfg *config.Config, group, name string, dial DialFunc) ([]Result, error) {
 	if cfg == nil {
 		return nil, errors.New("discover: nil config")
 	}
@@ -42,9 +42,9 @@ func Run(ctx context.Context, cfg *config.Config, group string, dial DialFunc) (
 	if err != nil {
 		return nil, err
 	}
-	devices, err = filterGroup(devices, group)
+	devices, err = inventory.Select(devices, group, name)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("discover: %w", err)
 	}
 
 	results := make([]Result, 0, len(devices))
@@ -151,22 +151,6 @@ func probe(ctx context.Context, cfg *config.Config, d inventory.Device, dial Dia
 		return Facts{}, fmt.Errorf("discover: %s: %w", d.Name, err)
 	}
 	return facts, nil
-}
-
-func filterGroup(devices []inventory.Device, group string) ([]inventory.Device, error) {
-	if group == "" {
-		return devices, nil
-	}
-	var out []inventory.Device
-	for _, d := range devices {
-		if d.Group == group {
-			out = append(out, d)
-		}
-	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("discover: no devices in group %q", group)
-	}
-	return out, nil
 }
 
 func writeFacts(stateDir string, d inventory.Device, facts Facts) error {

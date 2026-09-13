@@ -25,31 +25,28 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	group, err := cmd.Flags().GetString("group")
+	if err != nil {
+		return err
+	}
 	unlock, err := lockfile.Acquire(cfg.LockPath)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = unlock() }()
 
-	name := args[0]
 	devices, err := inventory.Load(cfg)
 	if err != nil {
 		return err
 	}
-	var device *inventory.Device
-	for i := range devices {
-		if devices[i].Name == name {
-			device = &devices[i]
-			break
-		}
-	}
-	if device == nil {
-		return fmt.Errorf("verify: unknown device %q", name)
+	device, err := inventory.Lookup(devices, group, args[0])
+	if err != nil {
+		return fmt.Errorf("verify: %w", err)
 	}
 
 	return validate.Verify(cmd.Context(), validate.Request{
 		Config:   cfg,
-		Device:   *device,
+		Device:   device,
 		Dial:     transport.Dial,
 		Progress: progress.New(cmd.OutOrStdout(), []string{device.Name}),
 	})

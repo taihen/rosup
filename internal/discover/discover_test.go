@@ -107,7 +107,7 @@ devices:
 		return client, nil
 	}
 
-	results, err := discover.Run(context.Background(), cfg, "", dial)
+	results, err := discover.Run(context.Background(), cfg, "", "", dial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ devices:
 		return &fakeClient{outputs: outs}, nil
 	}
 
-	results, err := discover.Run(context.Background(), cfg, "edge", dial)
+	results, err := discover.Run(context.Background(), cfg, "edge", "", dial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,6 +210,80 @@ devices:
 	}
 	if _, err := os.Stat(filepath.Join(cfg.StateDir, "core-1.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("core-1 state: %v", err)
+	}
+}
+
+func TestRunFiltersByName(t *testing.T) {
+	cfg, _ := writeDiscoverEnv(t, `
+devices:
+  - name: core-1
+    address: 192.0.2.1
+    role: ospf
+    group: core-a
+    order: 10
+    validation_profile: ospf
+  - name: edge-1
+    address: 192.0.2.2
+    role: access
+    group: edge
+    order: 20
+    validation_profile: access
+`)
+	var dialed []string
+	dial := func(_ context.Context, _ config.SSHConfig, address string, _ int) (transport.Client, error) {
+		dialed = append(dialed, address)
+		outs := fixtureOutputs(t)
+		outs["/system identity print"] = "  name: core-1\n"
+		return &fakeClient{outputs: outs}, nil
+	}
+
+	results, err := discover.Run(context.Background(), cfg, "", "core-1", dial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Device.Name != "core-1" {
+		t.Fatalf("results %+v", results)
+	}
+	if len(dialed) != 1 || dialed[0] != "192.0.2.1" {
+		t.Fatalf("dialed %v", dialed)
+	}
+}
+
+func TestRunNameAndGroup(t *testing.T) {
+	cfg, _ := writeDiscoverEnv(t, `
+devices:
+  - name: core-1
+    address: 192.0.2.1
+    role: ospf
+    group: core-a
+    order: 10
+    validation_profile: ospf
+  - name: edge-1
+    address: 192.0.2.2
+    role: access
+    group: edge
+    order: 20
+    validation_profile: access
+`)
+	dial := func(_ context.Context, _ config.SSHConfig, address string, _ int) (transport.Client, error) {
+		outs := fixtureOutputs(t)
+		outs["/system identity print"] = "  name: core-1\n"
+		return &fakeClient{outputs: outs}, nil
+	}
+	results, err := discover.Run(context.Background(), cfg, "core-a", "core-1", dial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Device.Name != "core-1" {
+		t.Fatalf("results %+v", results)
+	}
+
+	_, err = discover.Run(context.Background(), cfg, "edge", "core-1", dial)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "not in group") {
+		t.Fatalf("got %v", err)
 	}
 }
 
@@ -241,7 +315,7 @@ devices:
 		return &fakeClient{outputs: outs}, nil
 	}
 
-	results, err := discover.Run(context.Background(), cfg, "", dial)
+	results, err := discover.Run(context.Background(), cfg, "", "", dial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +346,7 @@ devices:
 		return &fakeClient{outputs: fixtureOutputs(t)}, nil
 	}
 
-	if _, err := discover.Run(context.Background(), cfg, "", dial); err != nil {
+	if _, err := discover.Run(context.Background(), cfg, "", "", dial); err != nil {
 		t.Fatal(err)
 	}
 	if gotPort != 22 {
@@ -294,7 +368,7 @@ devices:
 		t.Fatal("dial should not run")
 		return nil, nil
 	}
-	_, err := discover.Run(context.Background(), cfg, "missing", dial)
+	_, err := discover.Run(context.Background(), cfg, "missing", "", dial)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -327,7 +401,7 @@ devices:
 	dial := func(_ context.Context, _ config.SSHConfig, _ string, _ int) (transport.Client, error) {
 		return &fakeClient{outputs: fixtureOutputs(t)}, nil
 	}
-	if _, err := discover.Run(context.Background(), cfg, "", dial); err != nil {
+	if _, err := discover.Run(context.Background(), cfg, "", "", dial); err != nil {
 		t.Fatal(err)
 	}
 

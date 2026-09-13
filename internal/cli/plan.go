@@ -14,14 +14,14 @@ import (
 
 func NewPlanCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "plan",
+		Use:   "plan [device]",
 		Short: "Show what an upgrade would do",
-		Args:  cobra.NoArgs,
+		Args:  cobra.MaximumNArgs(1),
 		RunE:  runPlan,
 	}
 }
 
-func runPlan(cmd *cobra.Command, _ []string) error {
+func runPlan(cmd *cobra.Command, args []string) error {
 	version, err := cmd.Flags().GetString("release")
 	if err != nil {
 		return err
@@ -33,6 +33,7 @@ func runPlan(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	name := optionalArg(args)
 
 	cfg, err := loadConfig(cmd)
 	if err != nil {
@@ -44,7 +45,7 @@ func runPlan(cmd *cobra.Command, _ []string) error {
 	}
 	defer func() { _ = unlock() }()
 
-	report, err := plan.Run(cmd.Context(), cfg, version, group, sshDiscover)
+	report, err := plan.Run(cmd.Context(), cfg, version, group, name, sshDiscover)
 	if err != nil {
 		return err
 	}
@@ -54,6 +55,6 @@ func runPlan(cmd *cobra.Command, _ []string) error {
 	return plan.Failure(report)
 }
 
-func sshDiscover(ctx context.Context, cfg *config.Config, group string) ([]discover.Result, error) {
-	return discover.Run(ctx, cfg, group, transport.Dial)
+func sshDiscover(ctx context.Context, cfg *config.Config, group, name string) ([]discover.Result, error) {
+	return discover.Run(ctx, cfg, group, name, transport.Dial)
 }
