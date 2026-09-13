@@ -17,6 +17,7 @@ type Facts struct {
 	Version          string    `json:"version"`
 	FreeHDDSpace     string    `json:"free_hdd_space"`
 	Packages         []Package `json:"packages"`
+	RouterBoard      bool      `json:"routerboard"`
 	CurrentFirmware  string    `json:"current_firmware"`
 	UpgradeFirmware  string    `json:"upgrade_firmware"`
 	Identity         string    `json:"identity,omitempty"`
@@ -31,6 +32,10 @@ func Parse(resource, packages, routerboard, identity string) (Facts, error) {
 	if err != nil {
 		return Facts{}, err
 	}
+	routerBoard, err := parseRouterBoard(rb)
+	if err != nil {
+		return Facts{}, err
+	}
 
 	facts := Facts{
 		ArchitectureName: res["architecture-name"],
@@ -38,6 +43,7 @@ func Parse(resource, packages, routerboard, identity string) (Facts, error) {
 		Version:          version,
 		FreeHDDSpace:     res["free-hdd-space"],
 		Packages:         parsePackages(packages),
+		RouterBoard:      routerBoard,
 		CurrentFirmware:  rb["current-firmware"],
 		UpgradeFirmware:  rb["upgrade-firmware"],
 		Identity:         id["name"],
@@ -51,11 +57,13 @@ func Parse(resource, packages, routerboard, identity string) (Facts, error) {
 	if facts.FreeHDDSpace == "" {
 		return Facts{}, fmt.Errorf("discover: missing free-hdd-space")
 	}
-	if facts.CurrentFirmware == "" {
-		return Facts{}, fmt.Errorf("discover: missing current-firmware")
-	}
-	if facts.UpgradeFirmware == "" {
-		return Facts{}, fmt.Errorf("discover: missing upgrade-firmware")
+	if facts.RouterBoard {
+		if facts.CurrentFirmware == "" {
+			return Facts{}, fmt.Errorf("discover: missing current-firmware")
+		}
+		if facts.UpgradeFirmware == "" {
+			return Facts{}, fmt.Errorf("discover: missing upgrade-firmware")
+		}
 	}
 	if facts.Identity == "" {
 		return Facts{}, fmt.Errorf("discover: missing identity")
@@ -64,6 +72,12 @@ func Parse(resource, packages, routerboard, identity string) (Facts, error) {
 		return Facts{}, fmt.Errorf("discover: no packages")
 	}
 	return facts, nil
+}
+
+// HasRouterBoard also recognizes facts written before the routerboard field
+// was added. Those facts always carried both firmware values.
+func (f Facts) HasRouterBoard() bool {
+	return f.RouterBoard || f.CurrentFirmware != "" || f.UpgradeFirmware != ""
 }
 
 // MatchInventory requires RouterOS identity to equal the inventory device name.
@@ -87,6 +101,28 @@ func ros6Version(raw string) (string, error) {
 		return "", fmt.Errorf("discover: RouterOS 7 is not supported (%s)", v)
 	}
 	return v, nil
+}
+
+func parseRouterBoard(rb map[string]string) (bool, error) {
+	value, present := rb["routerboard"]
+	if !present {
+		// Older RouterOS output and existing fixtures omit the marker. Firmware
+		// values identify those as RouterBOARD devices; otherwise retain the
+		// historical strict missing-firmware error below.
+		return true, nil
+	}
+
+	switch strings.ToLower(value) {
+	case "yes":
+		return true, nil
+	case "no":
+		if rb["current-firmware"] != "" || rb["upgrade-firmware"] != "" {
+			return false, fmt.Errorf("discover: non-RouterBOARD reports RouterBOOT firmware")
+		}
+		return false, nil
+	default:
+		return false, fmt.Errorf("discover: invalid routerboard %q", value)
+	}
 }
 
 func parseKV(s string) map[string]string {

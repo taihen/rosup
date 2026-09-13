@@ -368,6 +368,21 @@ func TestCheckAllowsNewerRouterBOOTWhenNotUpgradingThisPass(t *testing.T) {
 	}
 }
 
+func TestCheckAllowsNonRouterBoardWithoutRouterBOOT(t *testing.T) {
+	cfg := testConfig(t)
+	writeProfile(t, cfg, "ospf", "convergence_timeout: 1ms\n")
+	facts := sampleFacts(current)
+	facts.CurrentFirmware = ""
+	facts.UpgradeFirmware = ""
+	writeBaselineFor(t, cfg, facts)
+	client := newFakeClient(t, target, []string{"routeros", "wireless"}, ros6Fixture(t, "log-print-system.txt"))
+	client.set("/system routerboard print", "routerboard: no\n")
+
+	if err := runCheck(t, cfg, testDevice(), client, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCheckCallsRoleHookAfterSharedChecks(t *testing.T) {
 	cfg := testConfig(t)
 	writeProfile(t, cfg, "ospf", "convergence_timeout: 1ms\n")

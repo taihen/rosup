@@ -133,6 +133,39 @@ func TestHappyPathReachesCompleteWithoutRouterBOOT(t *testing.T) {
 	}
 }
 
+func TestNonRouterBoardSkipsRouterBOOTStages(t *testing.T) {
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	sim := world.sim("router-01")
+	sim.nonRouterBoard = true
+	var output bytes.Buffer
+	opts := world.opts()
+	opts.Out = &output
+
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", opts); err != nil {
+		t.Fatal(err)
+	}
+
+	job, err := state.Load(cfg.StateDir, "router-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != state.StatusComplete {
+		t.Fatalf("status %q", job.Status)
+	}
+	if sim.reboots != 1 {
+		t.Fatalf("reboots %d, want 1 for package upgrade only", sim.reboots)
+	}
+	if contains(sim.runs, "/system routerboard upgrade") {
+		t.Fatal("RouterBOOT upgrade ran on a non-RouterBOARD")
+	}
+	if !strings.Contains(output.String(), "-  router-01  RouterBOOT not present\n") {
+		t.Fatalf("missing non-RouterBOARD skip message in %q", output.String())
+	}
+	if strings.Contains(output.String(), "RouterBOOT already current") {
+		t.Fatalf("non-RouterBOARD reported current RouterBOOT: %q", output.String())
+	}
+}
+
 func TestEqualFirmwareSkipsRouterBOOTStages(t *testing.T) {
 	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
 	sim := world.sim("router-01")
@@ -1171,6 +1204,7 @@ type deviceSim struct {
 	reconnectAttempts   int
 	currentFirmware     string
 	upgradeFirmware     string
+	nonRouterBoard      bool
 	routerbootPending   bool
 	failValidateSSH     bool
 	failValidateVersion bool
@@ -1547,6 +1581,9 @@ func packagePrint(version string, pkgs []string) string {
 }
 
 func (s *deviceSim) routerboardPrint() string {
+	if s.nonRouterBoard {
+		return "routerboard: no\n"
+	}
 	current := s.currentFirmware
 	if current == "" {
 		current = "6.49.18"

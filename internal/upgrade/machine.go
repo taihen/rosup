@@ -208,7 +208,7 @@ func runDevice(ctx context.Context, cfg *config.Config, version string, d invent
 			return markFailed(cfg.StateDir, job, err)
 		} else if skip {
 			if st == StageRouterbootUpdate {
-				r.progress.Skip(d.Name, "RouterBOOT already current")
+				r.progress.Skip(d.Name, r.skipRBReason)
 			}
 			continue
 		}
@@ -235,19 +235,20 @@ func runDevice(ctx context.Context, cfg *config.Config, version string, d invent
 }
 
 type deviceRun struct {
-	ctx        context.Context
-	cfg        *config.Config
-	version    string
-	d          inventory.Device
-	man        release.Manifest
-	opts       Options
-	job        *state.DeviceJob
-	client     transport.Client
-	backedUp   bool
-	export     string
-	skipRB     *bool
-	downgraded bool
-	progress   *progress.Printer
+	ctx          context.Context
+	cfg          *config.Config
+	version      string
+	d            inventory.Device
+	man          release.Manifest
+	opts         Options
+	job          *state.DeviceJob
+	client       transport.Client
+	backedUp     bool
+	export       string
+	skipRB       *bool
+	skipRBReason string
+	downgraded   bool
+	progress     *progress.Printer
 }
 
 func (r *deviceRun) tracked(label string, fn func() error) error {
@@ -412,12 +413,25 @@ func (r *deviceRun) skipBecauseCurrent(st string) bool {
 func (r *deviceRun) skipRouterbootStage(st string) (bool, error) {
 	switch st {
 	case StageRouterbootUpdate:
+		facts, err := factsFrom(r.job)
+		if err != nil {
+			return false, err
+		}
+		if !facts.HasRouterBoard() {
+			skip := true
+			r.skipRB = &skip
+			r.skipRBReason = "RouterBOOT not present"
+			return true, nil
+		}
 		newer, err := r.firmwareNewer()
 		if err != nil {
 			return false, err
 		}
 		skip := !newer
 		r.skipRB = &skip
+		if skip {
+			r.skipRBReason = "RouterBOOT already current"
+		}
 		return skip, nil
 	case StageRebootRouterboot, StageValidateAfterRouterboot:
 		return r.skipRB != nil && *r.skipRB, nil
