@@ -96,6 +96,36 @@ func TestParseROS6Fixture(t *testing.T) {
 	}
 }
 
+func TestParseAcceptsNonRouterBoard(t *testing.T) {
+	facts, err := discover.Parse(
+		ros6Fixture(t, "resource-print.txt"),
+		ros6Fixture(t, "package-print.txt"),
+		"routerboard: no\n",
+		ros6Fixture(t, "identity-print.txt"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if facts.RouterBoard {
+		t.Fatal("expected non-RouterBOARD facts")
+	}
+	if facts.CurrentFirmware != "" || facts.UpgradeFirmware != "" {
+		t.Fatalf("firmware %q / %q", facts.CurrentFirmware, facts.UpgradeFirmware)
+	}
+}
+
+func TestParseRejectsMissingFirmwareOnRouterBoard(t *testing.T) {
+	_, err := discover.Parse(
+		ros6Fixture(t, "resource-print.txt"),
+		ros6Fixture(t, "package-print.txt"),
+		"routerboard: yes\nupgrade-firmware: 6.49.21\n",
+		ros6Fixture(t, "identity-print.txt"),
+	)
+	if err == nil || !strings.Contains(err.Error(), "current-firmware") {
+		t.Fatalf("got %v", err)
+	}
+}
+
 func TestParseKeepsRouterOSArchPackageName(t *testing.T) {
 	packages := "" +
 		"Flags: X - disabled \n" +
@@ -164,6 +194,7 @@ func TestFormatPrintsParsedFields(t *testing.T) {
 		"router-01",
 		"architecture-name: arm",
 		"board-name: hAP ac^2",
+		"routerboard: yes",
 		"version: 6.49.18",
 		"free-hdd-space: 4212.0KiB",
 		"current-firmware: 6.49.13",

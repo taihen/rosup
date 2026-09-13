@@ -100,6 +100,12 @@ devices:
 
 `role` and `validation_profile` must each be `ospf`, `pppoe`, `radio`, `switch`, or `access`. They are usually the same. Each used role needs `inventory/profiles/<role>.yaml` with `convergence_timeout`. That wait starts after SSH is back, not during the 3m reconnect. Radio is typically 5m. PPPoE is 10m plus `session_restore_timeout`. Do not upgrade a console router with almost no free disk.
 
+Devices that report `routerboard: no` from `/system routerboard print` are
+supported for RouterOS package upgrades. rosup skips the RouterBOOT update and
+reboot stages for them. RouterBOARD devices, and legacy output without the
+`routerboard` marker, must report both `current-firmware` and
+`upgrade-firmware`.
+
 Upgrade order is group, then order, then name. `depends_on` adds a gate: each dependency must be complete on that release, or upgrade earlier in the same run. Unmet deps show as BLOCKED in `plan`.
 
 ## Config

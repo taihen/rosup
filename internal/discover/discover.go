@@ -74,6 +74,7 @@ func Format(w io.Writer, results []Result) error {
 		lines := []string{
 			"  architecture-name: " + r.Facts.ArchitectureName,
 			"  board-name: " + r.Facts.BoardName,
+			"  routerboard: " + yesNo(r.Facts.HasRouterBoard()),
 			"  version: " + r.Facts.Version,
 			"  free-hdd-space: " + r.Facts.FreeHDDSpace,
 			"  current-firmware: " + r.Facts.CurrentFirmware,
@@ -95,6 +96,13 @@ func Format(w io.Writer, results []Result) error {
 		}
 	}
 	return nil
+}
+
+func yesNo(value bool) string {
+	if value {
+		return "yes"
+	}
+	return "no"
 }
 
 func Probe(ctx context.Context, cfg *config.Config, d inventory.Device, dial DialFunc) (Facts, error) {

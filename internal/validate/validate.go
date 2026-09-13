@@ -297,8 +297,10 @@ func checkAfterWait(ctx context.Context, req Request, profileName string, profil
 	if err := checkPackageVersions(req.Device.Name, req.Target, facts.Packages); err != nil {
 		return err
 	}
-	if err := checkFirmware(req.Device.Name, facts.CurrentFirmware, facts.UpgradeFirmware, req.UpgradeFirmware); err != nil {
-		return err
+	if facts.HasRouterBoard() {
+		if err := checkFirmware(req.Device.Name, facts.CurrentFirmware, facts.UpgradeFirmware, req.UpgradeFirmware); err != nil {
+			return err
+		}
 	}
 
 	logOut, err := client.Run(ctx, SystemLogCmd)
