@@ -10,7 +10,7 @@ It downloads Long-term packages, upgrades one device at a time, checks the resul
 
 Three places matter.
 
-**Git** is the ops repo. The checkout lives at `ops.path` and the remote is `ops.remote`. You commit `inventory/` so the controller knows which boxes exist and which role each one has. After an upgrade finishes, rosup writes `audit/` so you can read what changed without mixing that into inventory. Periodic `backup run` writes redacted text exports under `backups/`. The GitHub deploy key is ed25519.
+**Git** is the ops repo. The checkout lives at `ops.path` and the remote is `ops.remote`. You commit `inventory/` so the controller knows which boxes exist and which role each one has. `rosup pull` force-syncs that checkout from the remote (remote always wins). After an upgrade finishes, rosup writes `audit/` so you can read what changed without mixing that into inventory. Periodic `backup run` writes redacted text exports under `backups/`. The GitHub deploy key is ed25519.
 
 **Managed devices** are the rows in `inventory/devices.yaml`. Each row is a name, address, port, role, validation profile, group, order, and optional depends_on. That file is the fleet. rosup does not scan the network. Upgrade order is group, then order, then name.
 
@@ -76,7 +76,7 @@ audit/
 backups/
 ```
 
-Commit `inventory/` yourself. rosup never commits that path. `audit/` is written when an upgrade completes. `backups/` holds dated text exports from `backup run`. Do not edit those machine-written trees.
+Commit `inventory/` yourself. rosup never commits that path. Run `rosup pull` to refresh the checkout from `ops.remote`; remote wins and local drift is discarded. `audit/` is written when an upgrade completes. `backups/` holds dated text exports from `backup run`. Do not edit those machine-written trees.
 
 ### devices.yaml
 
@@ -236,6 +236,7 @@ x  edge-1  installing packages
 Only one controller may run. A second instance fails until the lock is released.
 
 ```bash
+rosup pull
 rosup status
 rosup status --group GROUP --release VERSION
 rosup verify DEVICE
@@ -245,6 +246,8 @@ rosup backup run
 rosup backup run --group GROUP
 rosup backup restore DEVICE --file PATH
 ```
+
+`rosup pull` fetches `ops.remote` (with prune), requires the current branch to track `origin`, then cleans untracked paths and hard-resets to that tip. Uncommitted edits, untracked files, unpushed local commits, and other local-only worktree files are discarded. This is not `git pull`: remote always wins. Soft refreshes inside `backup run` / upgrade audit pushes still use a normal fast-forward pull and do not discard local commits. If pull fails after the clean step, re-run it; do not hand-edit the checkout to recover.
 
 `backup run` takes a local binary backup and text export per device, prunes old files under `backup_dir` by `backup_retention_days`, then commits redacted `.rsc` files to the ops repo at `backups/<device>/YYYY/MM/<device>-<timestamp>.rsc`. Failed devices are skipped for the git push; the command exits non-zero if any device or the push failed. Suitable for cron.
 

@@ -125,6 +125,48 @@ func TestPushCommitsAuditOnlyWhenInventoryDirty(t *testing.T) {
 	}
 }
 
+func TestPushIgnoresPreStagedInventory(t *testing.T) {
+	env := setupOpsRepo(t)
+	inv := filepath.Join(env.ops, "inventory", "devices.yaml")
+	if err := os.WriteFile(inv, []byte("devices: [{name: staged}]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo := openRepo(t, env.ops)
+	wt, err := repo.Worktree()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wt.Add("inventory/devices.yaml"); err != nil {
+		t.Fatal(err)
+	}
+
+	job := completeJob()
+	if err := auditgit.Push(context.Background(), env.cfg, job, "job-1", auditgit.Artifacts{
+		Export: "# export\n",
+		Result: map[string]string{"ok": "true"},
+		Log:    "done\n",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	commit := headCommit(t, env.bare)
+	for _, path := range commitPaths(t, commit) {
+		if strings.HasPrefix(path, "inventory/") {
+			t.Fatalf("committed staged inventory path %q", path)
+		}
+		if !strings.HasPrefix(path, "audit/") {
+			t.Fatalf("committed non-audit path %q", path)
+		}
+	}
+	got, err := os.ReadFile(inv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "devices: [{name: staged}]\n" {
+		t.Fatalf("inventory worktree overwritten: %q", got)
+	}
+}
+
 func TestPushDoesNotAddBackupFileInOpsPath(t *testing.T) {
 	env := setupOpsRepo(t)
 	backup := filepath.Join(env.ops, "foo.backup")

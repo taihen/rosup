@@ -1,4 +1,4 @@
-package backupgit
+package opsgit
 
 import (
 	"crypto/ed25519"
@@ -16,8 +16,8 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-func TestGitAuthEmptyKeyReturnsNil(t *testing.T) {
-	auth, err := gitAuth(&config.Config{})
+func TestAuthEmptyKeyReturnsNil(t *testing.T) {
+	auth, err := Auth(&config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,10 +26,10 @@ func TestGitAuthEmptyKeyReturnsNil(t *testing.T) {
 	}
 }
 
-func TestGitAuthKeyWithoutKnownHostsErrors(t *testing.T) {
+func TestAuthKeyWithoutKnownHostsErrors(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Ops.SSHPrivateKeyPath = writeAuthTestPrivateKey(t)
-	auth, err := gitAuth(cfg)
+	auth, err := Auth(cfg)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -41,11 +41,11 @@ func TestGitAuthKeyWithoutKnownHostsErrors(t *testing.T) {
 	}
 }
 
-func TestGitAuthMissingKeyFileErrors(t *testing.T) {
+func TestAuthMissingKeyFileErrors(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Ops.SSHPrivateKeyPath = filepath.Join(t.TempDir(), "missing-ops-key")
 	cfg.Ops.GitKnownHostsPath = writeAuthTestKnownHosts(t)
-	auth, err := gitAuth(cfg)
+	auth, err := Auth(cfg)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -54,12 +54,12 @@ func TestGitAuthMissingKeyFileErrors(t *testing.T) {
 	}
 }
 
-func TestGitAuthValidKeyAndKnownHosts(t *testing.T) {
+func TestAuthValidKeyAndKnownHosts(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Ops.SSHPrivateKeyPath = writeAuthTestPrivateKey(t)
 	cfg.Ops.GitKnownHostsPath = writeAuthTestKnownHosts(t)
 
-	auth, err := gitAuth(cfg)
+	auth, err := Auth(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestGitAuthValidKeyAndKnownHosts(t *testing.T) {
 	}
 }
 
-func TestGitAuthUsesOpsGitKnownHostsNotRouterOSTOFU(t *testing.T) {
+func TestAuthUsesOpsGitKnownHostsNotRouterOSTOFU(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Ops.SSHPrivateKeyPath = writeAuthTestPrivateKey(t)
 	cfg.Ops.GitKnownHostsPath = writeAuthTestKnownHosts(t)
@@ -103,9 +103,9 @@ func TestGitAuthUsesOpsGitKnownHostsNotRouterOSTOFU(t *testing.T) {
 	}
 	cfg.SSH.KnownHostsPath = tofuPath
 
-	assertGitAuthOK := func(t *testing.T) {
+	assertAuthOK := func(t *testing.T) {
 		t.Helper()
-		auth, err := gitAuth(cfg)
+		auth, err := Auth(cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -117,11 +117,32 @@ func TestGitAuthUsesOpsGitKnownHostsNotRouterOSTOFU(t *testing.T) {
 		}
 	}
 
-	assertGitAuthOK(t)
+	assertAuthOK(t)
 	if err := os.Remove(tofuPath); err != nil {
 		t.Fatal(err)
 	}
-	assertGitAuthOK(t)
+	assertAuthOK(t)
+}
+
+func TestNeedsSSHAuth(t *testing.T) {
+	cases := []struct {
+		remote string
+		want   bool
+	}{
+		{"git@github.com:org/ops.git", true},
+		{"ssh://git@github.com/org/ops.git", true},
+		{"github.com:org/ops.git", true},
+		{"user@host:path/repo.git", true},
+		{"https://github.com/org/ops.git", false},
+		{"file:///tmp/ops.git", false},
+		{"/tmp/ops.git", false},
+		{"relative/path.git", false},
+	}
+	for _, tc := range cases {
+		if got := needsSSHAuth(tc.remote); got != tc.want {
+			t.Fatalf("needsSSHAuth(%q)=%v, want %v", tc.remote, got, tc.want)
+		}
+	}
 }
 
 func writeAuthTestPrivateKey(t *testing.T) string {

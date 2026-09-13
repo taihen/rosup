@@ -53,6 +53,7 @@ func newRootCmd() *cobra.Command {
 		cli.NewVerifyCmd(),
 		cli.NewRollbackCmd(),
 		cli.NewBackupCmd(),
+		cli.NewPullCmd(),
 	)
 	return root
 }
