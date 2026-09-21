@@ -93,12 +93,71 @@ devices:
 		t.Fatalf("%+v", report.Devices)
 	}
 
+	// --release does not drop inventory hosts (wrong-release / jobless stay listed).
 	report, err = status.Run(cfg, "", "", "6.49.21")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Devices) != 1 || report.Devices[0].Name != "edge-1" {
-		t.Fatalf("release filter: %+v", report.Devices)
+	if len(report.Devices) != 2 {
+		t.Fatalf("release filter should keep inventory: %+v", report.Devices)
+	}
+	byName := map[string]status.Device{}
+	for _, d := range report.Devices {
+		byName[d.Name] = d
+	}
+	if byName["edge-1"].Status != state.StatusFailed || byName["edge-1"].Release != "6.49.21" {
+		t.Fatalf("edge-1: %+v", byName["edge-1"])
+	}
+	if byName["core-1"].Status != state.StatusComplete || byName["core-1"].Release != "6.49.18" {
+		t.Fatalf("core-1: %+v", byName["core-1"])
+	}
+}
+
+func TestRunReleaseIncludesJoblessAndNextAction(t *testing.T) {
+	cfg := statusConfig(t, `
+devices:
+  - name: edge-1
+    address: 192.0.2.10
+    role: radio
+    group: radio
+    validation_profile: radio
+    order: 10
+  - name: edge-2
+    address: 192.0.2.11
+    role: radio
+    group: radio
+    validation_profile: radio
+    order: 20
+`)
+	if err := state.Save(cfg.StateDir, &state.DeviceJob{
+		Device:  "edge-1",
+		Release: "6.49.21",
+		Group:   "radio",
+		Status:  state.StatusComplete,
+		Stage:   "COMPLETE",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// edge-2: never started
+
+	report, err := status.Run(cfg, "radio", "", "6.49.21")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Devices) != 2 {
+		t.Fatalf("devices %+v", report.Devices)
+	}
+	var buf bytes.Buffer
+	if err := status.Format(&buf, report); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	if !strings.Contains(got, "edge-2\n  group: radio\n  release: -\n  stage: -\n  status: none\n") {
+		t.Fatalf("missing jobless host in %q", got)
+	}
+	want := "next: rosup upgrade --release 6.49.21 --group radio --resume\n"
+	if !strings.Contains(got, want) {
+		t.Fatalf("missing %q in %q", want, got)
 	}
 }
 
@@ -225,6 +284,95 @@ func TestFormat(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in %q", want, got)
 		}
+	}
+	if strings.Contains(got, "next:") {
+		t.Fatalf("unexpected next-action without release filter: %q", got)
+	}
+}
+
+func TestFormatNextActionIncomplete(t *testing.T) {
+	var buf bytes.Buffer
+	err := status.Format(&buf, &status.Report{
+		Group:   "radio",
+		Release: "6.49.21",
+		Devices: []status.Device{
+			{
+				Name:    "edge-1",
+				Group:   "radio",
+				Release: "6.49.21",
+				Status:  state.StatusFailed,
+				Stage:   "REBOOT",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "next: rosup upgrade --release 6.49.21 --group radio --resume\n"
+	if !strings.Contains(buf.String(), want) {
+		t.Fatalf("missing %q in %q", want, buf.String())
+	}
+}
+
+func TestFormatNextActionNoGroup(t *testing.T) {
+	var buf bytes.Buffer
+	err := status.Format(&buf, &status.Report{
+		Release: "6.49.21",
+		Devices: []status.Device{
+			{Name: "edge-1", Release: "6.49.21", Status: state.StatusPending},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "next: rosup upgrade --release 6.49.21 --resume\n"
+	if !strings.Contains(buf.String(), want) {
+		t.Fatalf("missing %q in %q", want, buf.String())
+	}
+}
+
+func TestFormatNextActionAbsentWhenComplete(t *testing.T) {
+	var buf bytes.Buffer
+	err := status.Format(&buf, &status.Report{
+		Release: "6.49.21",
+		Devices: []status.Device{
+			{Name: "edge-1", Release: "6.49.21", Status: state.StatusComplete},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "next:") {
+		t.Fatalf("unexpected next-action: %q", buf.String())
+	}
+}
+
+func TestRunStoresFilters(t *testing.T) {
+	cfg := statusConfig(t, `
+devices:
+  - name: edge-1
+    address: 192.0.2.10
+    role: radio
+    group: radio
+    validation_profile: radio
+    order: 10
+`)
+	job := &state.DeviceJob{
+		Device:  "edge-1",
+		Release: "6.49.21",
+		Group:   "radio",
+		Status:  state.StatusFailed,
+		Stage:   "REBOOT",
+	}
+	if err := state.Save(cfg.StateDir, job); err != nil {
+		t.Fatal(err)
+	}
+	report, err := status.Run(cfg, "radio", "", "6.49.21")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Group != "radio" || report.Release != "6.49.21" {
+		t.Fatalf("filters %+v", report)
 	}
 }
 

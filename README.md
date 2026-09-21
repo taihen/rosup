@@ -226,7 +226,7 @@ rosup upgrade --release VERSION DEVICE --group GROUP
 
 `plan` prints the readiness report on stdout. If any host is blocked (disk, missing packages, unmet `depends_on`, or unsupported), it exits non-zero with a short counts-only error on stderr (host details stay on stdout).
 
-`release sync` prints `synced VERSION (N files)`. Use that VERSION. Omit `--group` to do every device. One device at a time. The first failure stops the run. A device already on the release skips packages and reboot. Incomplete jobs need `--resume` for the same release.
+`release sync` prints `synced VERSION (N files)`. Use that VERSION. Omit `--group` to do every device. One device at a time. The first failure stops the run. A device already on the release skips packages and reboot. Incomplete jobs need `--resume` for the same release. Every upgrade ends with a rollup line (`upgrade: OK|FAILED  N complete / N failed / N pending  release VERSION`); if any selected device is not complete on the release, the command exits non-zero.
 
 ```
 >  edge-1  checking SSH and version
@@ -262,7 +262,7 @@ A device name selects one host. With `--group`, both must match (the device must
 
 `backup run` takes a local binary backup and text export per device, prunes old files under `backup_dir` by `backup_retention_days`, then commits redacted `.rsc` files to the ops repo at `backups/<device>/YYYY/MM/<device>-<timestamp>.rsc`. Failed devices are skipped for the git push; the command exits non-zero if any device or the push failed. Suitable for cron.
 
-`status` joins inventory with local job state. After a fix, resume the same release; do not change `--release` mid-job. With `--resume`, only failed or in-progress jobs for that release continue; pending and untouched devices are skipped.
+`status` joins inventory with local job state. After a fix, resume the same release; do not change `--release` mid-job. With `--resume`, failed, in-progress, and pending/untouched devices for that release continue in group/order/name order. The first failure still stops the run. When `--release` is set, `status` lists every selected inventory host (including never-started ones) and prints a `next:` line if any is not complete on that release.
 
 ## License
 

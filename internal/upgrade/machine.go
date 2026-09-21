@@ -69,6 +69,8 @@ type Options struct {
 	Push   func(ctx context.Context, cfg *config.Config, job *state.DeviceJob, jobID string, artifacts auditgit.Artifacts) error
 	Out    io.Writer
 	Resume bool
+	// Rollup overrides CountRollup (tests).
+	Rollup func(stateDir, version string, devices []inventory.Device) (Rollup, error)
 }
 
 type realClock struct{}
@@ -105,12 +107,31 @@ func Run(ctx context.Context, cfg *config.Config, version, group, name string, o
 	}
 	printer := progress.New(opts.Out, names)
 
+	var runErr error
 	for _, d := range devices {
 		if err := runDevice(ctx, cfg, version, d, man, opts, printer); err != nil {
-			return err
+			runErr = err
+			break
 		}
 	}
-	return nil
+
+	rollup, err := opts.Rollup(cfg.StateDir, version, devices)
+	if err != nil {
+		if runErr != nil {
+			return runErr
+		}
+		return err
+	}
+	if err := WriteRollup(opts.Out, rollup); err != nil {
+		if runErr != nil {
+			return runErr
+		}
+		return err
+	}
+	if runErr != nil {
+		return runErr
+	}
+	return Incomplete(rollup)
 }
 
 func applyDefaults(opts Options) Options {
@@ -122,6 +143,9 @@ func applyDefaults(opts Options) Options {
 	}
 	if opts.Push == nil {
 		opts.Push = auditgit.Push
+	}
+	if opts.Rollup == nil {
+		opts.Rollup = CountRollup
 	}
 	return opts
 }
@@ -144,17 +168,13 @@ func runDevice(ctx context.Context, cfg *config.Config, version string, d invent
 		}
 	}
 
-	switch {
-	case job.Status == state.StatusInProgress || job.Status == state.StatusFailed:
+	if job.Status == state.StatusInProgress || job.Status == state.StatusFailed {
 		if job.Release != "" && job.Release != version {
 			return fmt.Errorf("upgrade: %s: incomplete job is for release %s, not %s", d.Name, job.Release, version)
 		}
 		if !opts.Resume {
 			return fmt.Errorf("upgrade: %s: job is %s at stage %s; re-run with --resume", d.Name, job.Status, job.Stage)
 		}
-	case opts.Resume:
-		printer.Skip(d.Name, "nothing to resume")
-		return nil
 	}
 
 	if err := checkDepends(cfg.StateDir, d, version); err != nil {

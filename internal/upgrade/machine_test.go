@@ -484,7 +484,8 @@ func TestHappyPathPlainProgress(t *testing.T) {
 		"*  router-01  checking ospf\n" +
 		"-  router-01  RouterBOOT already current\n" +
 		">  router-01  writing audit\n" +
-		"*  router-01  writing audit\n"
+		"*  router-01  writing audit\n" +
+		"upgrade: OK      1 complete / 0 failed / 0 pending  release 6.49.21\n"
 	if buf.String() != want {
 		t.Fatalf("got %q want %q", buf.String(), want)
 	}
@@ -501,7 +502,8 @@ func TestCompleteJobPlainProgressIsSingleSkip(t *testing.T) {
 	if err := upgrade.Run(context.Background(), cfg, target, "core-a", "", opts); err != nil {
 		t.Fatal(err)
 	}
-	want := "-  router-01  already 6.49.21\n"
+	want := "-  router-01  already 6.49.21\n" +
+		"upgrade: OK      1 complete / 0 failed / 0 pending  release 6.49.21\n"
 	if buf.String() != want {
 		t.Fatalf("got %q want %q", buf.String(), want)
 	}
@@ -539,7 +541,8 @@ func TestReconnectTimeoutPlainProgress(t *testing.T) {
 	}
 	want := "" +
 		">  router-01  waiting for SSH (3m)\n" +
-		"x  router-01  waiting for SSH (3m)\n"
+		"x  router-01  waiting for SSH (3m)\n" +
+		"upgrade: FAILED  0 complete / 1 failed / 0 pending  release 6.49.21\n"
 	if buf.String() != want {
 		t.Fatalf("got %q want %q", buf.String(), want)
 	}
@@ -687,7 +690,7 @@ func TestResumeRefusesCrossRelease(t *testing.T) {
 	}
 }
 
-func TestResumeSkipsPendingDevices(t *testing.T) {
+func TestResumeContinuesPendingDevices(t *testing.T) {
 	cfg, world := setup(t,
 		device("router-01", "core-a", 10, nil),
 		device("router-02", "core-a", 20, nil),
@@ -712,10 +715,6 @@ func TestResumeSkipsPendingDevices(t *testing.T) {
 	if err := state.Save(cfg.StateDir, pending); err != nil {
 		t.Fatal(err)
 	}
-	before, err := os.ReadFile(filepath.Join(cfg.StateDir, "router-02.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
 	sim := world.sim("router-01")
 	sim.version = target
 	sim.rebooted = true
@@ -732,17 +731,135 @@ func TestResumeSkipsPendingDevices(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got.Status != state.StatusComplete {
-		t.Fatalf("status %q", got.Status)
+		t.Fatalf("router-01 status %q", got.Status)
 	}
-	after, err := os.ReadFile(filepath.Join(cfg.StateDir, "router-02.json"))
+	got2, err := state.Load(cfg.StateDir, "router-02")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(before) != string(after) {
-		t.Fatalf("pending job changed:\nbefore %s\nafter %s", before, after)
+	if got2.Status != state.StatusComplete {
+		t.Fatalf("router-02 status %q", got2.Status)
 	}
-	if world.lookups["192.0.2.2"] != 0 {
-		t.Fatalf("dialed pending device %d times", world.lookups["192.0.2.2"])
+	if got2.Release != target {
+		t.Fatalf("router-02 release %q", got2.Release)
+	}
+	if world.lookups["192.0.2.2"] == 0 {
+		t.Fatal("did not dial pending device")
+	}
+}
+
+func TestUpgradeRollupHappyPath(t *testing.T) {
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	var out bytes.Buffer
+	opts := world.opts()
+	opts.Out = &out
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", "", opts); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "upgrade: OK") {
+		t.Fatalf("missing OK rollup in %q", got)
+	}
+	if !strings.Contains(got, "1 complete / 0 failed / 0 pending") {
+		t.Fatalf("counts %q", got)
+	}
+	if !strings.Contains(got, "release "+target) {
+		t.Fatalf("release %q", got)
+	}
+}
+
+func TestUpgradeRollupMidFail(t *testing.T) {
+	cfg, world := setup(t,
+		device("router-01", "core-a", 10, nil),
+		device("router-02", "core-a", 20, nil),
+	)
+	world.sim("router-01").dialErr = errors.New("ssh down")
+	var out bytes.Buffer
+	opts := world.opts()
+	opts.Out = &out
+	err := upgrade.Run(context.Background(), cfg, target, "core-a", "", opts)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "router-01") {
+		t.Fatalf("device error %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "upgrade: FAILED") {
+		t.Fatalf("missing FAILED rollup in %q", got)
+	}
+	if !strings.Contains(got, "0 complete / 1 failed / 1 pending") {
+		t.Fatalf("counts %q", got)
+	}
+}
+
+func TestIncompleteError(t *testing.T) {
+	err := upgrade.Incomplete(upgrade.Rollup{Complete: 1, Failed: 0, Pending: 1, Release: target})
+	if err == nil {
+		t.Fatal("expected incomplete error")
+	}
+	if !strings.Contains(err.Error(), "1 complete / 0 failed / 1 pending") {
+		t.Fatalf("got %v", err)
+	}
+	if err := upgrade.Incomplete(upgrade.Rollup{Complete: 2, Failed: 0, Pending: 0, Release: target}); err != nil {
+		t.Fatalf("complete set: %v", err)
+	}
+}
+
+func TestUpgradeRunReturnsIncomplete(t *testing.T) {
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", "", world.opts()); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	opts := world.opts()
+	opts.Out = &out
+	// Device loop succeeds (already complete); force a leftover-incomplete rollup
+	// so Run returns Incomplete — the fail-fast path otherwise prefers device errors.
+	opts.Rollup = func(stateDir, version string, devices []inventory.Device) (upgrade.Rollup, error) {
+		return upgrade.Rollup{Release: version, Complete: 0, Failed: 0, Pending: 1}, nil
+	}
+	err := upgrade.Run(context.Background(), cfg, target, "core-a", "", opts)
+	if err == nil {
+		t.Fatal("expected incomplete error")
+	}
+	if !strings.Contains(err.Error(), "upgrade: incomplete (0 complete / 0 failed / 1 pending)") {
+		t.Fatalf("got %v", err)
+	}
+	if !strings.Contains(out.String(), "upgrade: FAILED  0 complete / 0 failed / 1 pending  release "+target) {
+		t.Fatalf("rollup %q", out.String())
+	}
+}
+
+func TestCountRollupClassifiesJobs(t *testing.T) {
+	cfg, _ := setup(t,
+		device("router-01", "core-a", 10, nil),
+		device("router-02", "core-a", 20, nil),
+		device("core-1", "core-b", 10, nil),
+	)
+	devices := []inventory.Device{
+		device("router-01", "core-a", 10, nil),
+		device("router-02", "core-a", 20, nil),
+		device("core-1", "core-b", 10, nil),
+	}
+	for _, job := range []*state.DeviceJob{
+		{Device: "router-01", Release: target, Status: state.StatusComplete},
+		{Device: "router-02", Release: target, Status: state.StatusFailed},
+		// core-1: no job → pending
+	} {
+		if err := state.Save(cfg.StateDir, job); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := upgrade.CountRollup(cfg.StateDir, target, devices)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Complete != 1 || got.Failed != 1 || got.Pending != 1 {
+		t.Fatalf("got %+v", got)
+	}
+	if got.Release != target {
+		t.Fatalf("release %q", got.Release)
 	}
 }
 
