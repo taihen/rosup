@@ -12,6 +12,8 @@ import (
 )
 
 type Report struct {
+	Group   string
+	Release string
 	Devices []Device
 	Orphans []Device
 }
@@ -52,12 +54,15 @@ func Run(cfg *config.Config, group, name, release string) (*Report, error) {
 		byName[job.Device] = job
 	}
 
-	report := &Report{Devices: make([]Device, 0, len(devices))}
+	report := &Report{
+		Group:   group,
+		Release: release,
+		Devices: make([]Device, 0, len(devices)),
+	}
 	for _, d := range devices {
+		// Always list selected inventory hosts (even with --release and no matching
+		// job) so completeness and next: cover never-started / wrong-release devices.
 		job := byName[d.Name]
-		if release != "" && (job == nil || job.Release != release) {
-			continue
-		}
 		row := Device{
 			Name:  d.Name,
 			Group: d.Group,
@@ -138,7 +143,33 @@ func Format(w io.Writer, r *Report) error {
 			}
 		}
 	}
+	if line := nextAction(r); line != "" {
+		if _, err := fmt.Fprintln(w, line); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func nextAction(r *Report) string {
+	if r.Release == "" {
+		return ""
+	}
+	incomplete := false
+	for _, d := range r.Devices {
+		if d.Status != state.StatusComplete || d.Release != r.Release {
+			incomplete = true
+			break
+		}
+	}
+	if !incomplete {
+		return ""
+	}
+	line := "next: rosup upgrade --release " + r.Release
+	if r.Group != "" {
+		line += " --group " + r.Group
+	}
+	return line + " --resume"
 }
 
 func writeDevice(w io.Writer, d Device) error {

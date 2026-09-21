@@ -41,7 +41,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().String("group", "", "device group")
 	root.PersistentFlags().String("to-version", "", "target version")
 	root.PersistentFlags().String("file", "", "backup file path")
-	root.PersistentFlags().Bool("resume", false, "continue failed or in-progress jobs for --release")
+	root.PersistentFlags().Bool("resume", false, "continue incomplete jobs for --release (failed, in-progress, and pending)")
 
 	root.AddCommand(
 		newVersionCmd(),
