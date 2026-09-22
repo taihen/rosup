@@ -206,6 +206,18 @@ func runDevice(ctx context.Context, cfg *config.Config, version string, d invent
 	if err != nil {
 		return markFailed(cfg.StateDir, job, fmt.Errorf("upgrade: %s: %w", d.Name, err))
 	}
+	// Incomplete mid-upgrade resume must still wait/validate even if discover
+	// finds the box already on target (packages applied / external reboot).
+	if completeIdx, _ := startIndex(StageComplete); opts.Resume && start > 0 && start < completeIdx {
+		r.resumeNeedsValidate = true
+		// Stranded jobs past VALIDATE_ROLE (e.g. ROUTERBOOT_UPDATE after a
+		// prior attempt skipped validate) must rewind so package validate runs.
+		waitIdx, _ := startIndex(StageWaitForReconnect)
+		validateAfterIdx, _ := startIndex(StageValidateAfterRouterboot)
+		if start > waitIdx && start < validateAfterIdx {
+			start = waitIdx
+		}
+	}
 	// Refresh live facts before package/reboot decisions on resume. Do not probe
 	// while waiting for reconnect — the device may still be down.
 	if pkgIdx, _ := startIndex(StagePackages); start > 0 && start <= pkgIdx {
@@ -269,6 +281,9 @@ type deviceRun struct {
 	skipRBReason string
 	downgraded   bool
 	progress     *progress.Printer
+	// resumeNeedsValidate forces WAIT/VALIDATE_ROLE on --resume of an incomplete
+	// mid-upgrade job even when live facts already match the target release.
+	resumeNeedsValidate bool
 }
 
 func (r *deviceRun) tracked(label string, fn func() error) error {
@@ -383,7 +398,7 @@ func (r *deviceRun) reboot() error {
 	if err := r.ensureClient(); err != nil {
 		return err
 	}
-	if err := r.snapshotBaseline(); err != nil {
+	if err := r.ensureBaseline(); err != nil {
 		return err
 	}
 	_, err := r.client.Run(r.ctx, cmdReboot)
@@ -422,6 +437,10 @@ func (r *deviceRun) skipBecauseCurrent(st string) bool {
 	case StageDiscover, StageComplete,
 		StageRouterbootUpdate, StageRebootRouterboot, StageValidateAfterRouterboot:
 		return false
+	case StageWaitForReconnect, StageValidateRole:
+		if r.resumeNeedsValidate {
+			return false
+		}
 	}
 	facts, err := factsFrom(r.job)
 	if err != nil {
@@ -490,10 +509,64 @@ func (r *deviceRun) ensureBaseline() error {
 	if err != nil {
 		return fmt.Errorf("upgrade: %s: %w", r.d.Name, err)
 	}
-	if _, err := validate.ReadBaseline(dir); err == nil {
+	_, err = validate.ReadBaseline(dir)
+	if err == nil {
 		return nil
 	}
+	// Fail closed on corrupt/unreadable baselines — do not invent post-upgrade facts.
+	if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("upgrade: %s: baseline unreadable: %w", r.d.Name, err)
+	}
+	if err := r.refuseInventedPostUpgradeBaseline(); err != nil {
+		return err
+	}
 	return r.snapshotBaseline()
+}
+
+// refuseInventedPostUpgradeBaseline blocks creating a baseline from live role
+// state when the job still looks mid-package-upgrade but the device is already
+// on the target release. That would false-green VALIDATE_ROLE.
+// Already-on-release / RouterBOOT-only runs keep job facts on target and may
+// invent a baseline from live state intentionally.
+func (r *deviceRun) refuseInventedPostUpgradeBaseline() error {
+	jobFacts, err := factsFrom(r.job)
+	if err != nil {
+		return fmt.Errorf("upgrade: %s: %w", r.d.Name, err)
+	}
+	if preflight.AlreadyOnRelease(jobFacts, r.version) {
+		return nil
+	}
+	live, err := r.probeLiveFacts()
+	if err != nil {
+		return fmt.Errorf("upgrade: %s: probe before inventing baseline: %w", r.d.Name, err)
+	}
+	if preflight.AlreadyOnRelease(live, r.version) {
+		return fmt.Errorf("upgrade: %s: missing pre-upgrade baseline while device already on %s; refusing to invent baseline from post-upgrade state", r.d.Name, r.version)
+	}
+	return nil
+}
+
+func (r *deviceRun) probeLiveFacts() (discover.Facts, error) {
+	if err := r.ensureClient(); err != nil {
+		return discover.Facts{}, err
+	}
+	res, err := r.client.Run(r.ctx, "/system resource print")
+	if err != nil {
+		return discover.Facts{}, err
+	}
+	pkgs, err := r.client.Run(r.ctx, "/system package print")
+	if err != nil {
+		return discover.Facts{}, err
+	}
+	rb, err := r.client.Run(r.ctx, "/system routerboard print")
+	if err != nil {
+		return discover.Facts{}, err
+	}
+	id, err := r.client.Run(r.ctx, "/system identity print")
+	if err != nil {
+		return discover.Facts{}, err
+	}
+	return discover.Parse(res, pkgs, rb, id)
 }
 
 func (r *deviceRun) rebootRouterboot() error {

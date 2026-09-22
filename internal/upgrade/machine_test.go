@@ -565,7 +565,7 @@ func TestResumeFromStage(t *testing.T) {
 		{stage: upgrade.StageReboot, wantUpload: false, wantReboot: true},
 		{stage: upgrade.StageWaitForReconnect, wantUpload: false, wantReboot: false},
 		{stage: upgrade.StageValidateRole, wantUpload: false, wantReboot: false},
-		{stage: upgrade.StageRouterbootUpdate, wantUpload: false, wantReboot: false},
+		{stage: upgrade.StageRouterbootUpdate, wantUpload: false, wantReboot: true},
 		{stage: upgrade.StageRebootRouterboot, wantUpload: false, wantReboot: true},
 		{stage: upgrade.StageValidateAfterRouterboot, wantUpload: false, wantReboot: false},
 		{stage: upgrade.StageComplete, wantUpload: false, wantReboot: false},
@@ -578,6 +578,13 @@ func TestResumeFromStage(t *testing.T) {
 			if upgraded {
 				sim.version = target
 				sim.rebooted = true
+			}
+			// Mid-upgrade resume may rewind through ROUTERBOOT_UPDATE; keep
+			// firmware stale so RouterBOOT reboot stages still run after validate.
+			if stageIndex(tc.stage) >= stageIndex(upgrade.StageRouterbootUpdate) &&
+				stageIndex(tc.stage) <= stageIndex(upgrade.StageRebootRouterboot) {
+				sim.currentFirmware = "6.45.8"
+				sim.upgradeFirmware = "6.49.21"
 			}
 			job := &state.DeviceJob{
 				Device:  "router-01",
@@ -623,6 +630,353 @@ func TestResumeFromStage(t *testing.T) {
 				t.Fatalf("rebooted from %s", tc.stage)
 			}
 		})
+	}
+}
+
+func TestResumeRebootPreservesExistingBaseline(t *testing.T) {
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	sim := world.sim("router-01")
+	// Crash window: packages already applied, box is back on target, job still at REBOOT.
+	sim.version = target
+	sim.rebooted = true
+	sim.commandOutputs = map[string]string{
+		validate.CmdOSPFNeighbor: " 0 instance=default router-id=10.0.0.1 address=10.0.0.1 interface=bridge state=\"Full\"\n",
+		validate.CmdIPRoute:      " 1 ADC  192.0.2.0/24       192.0.2.10      ether1                      0\n",
+	}
+
+	// _marker is never emitted by live captureOSPF; only survives if reboot() skips baseline overwrite.
+	// commandOutputs match neighbors for VALIDATE_ROLE — they must not be treated as overwrite detection alone.
+	preRole := json.RawMessage(`{"_marker":"pre-upgrade-baseline","neighbors":[{"router_id":"10.0.0.1","address":"10.0.0.1","interface":"bridge","state":"Full"}],"prefixes":["192.0.2.0/24"]}`)
+	dir, err := validate.JobDir(cfg, "router-01", target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pre := validate.FromFacts("router-01", sampleFacts(current), true, preRole)
+	if err := validate.WriteBaseline(dir, pre); err != nil {
+		t.Fatal(err)
+	}
+
+	job := &state.DeviceJob{
+		Device:  "router-01",
+		Release: target,
+		Group:   "core-a",
+		Stage:   upgrade.StageReboot,
+		Status:  state.StatusInProgress,
+		Facts:   factsJSON(t, sampleFacts(current)),
+	}
+	if err := state.Save(cfg.StateDir, job); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := world.opts()
+	opts.Resume = true
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", "", opts); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := validate.ReadBaseline(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(compactJSON(t, got.RoleFacts), compactJSON(t, preRole)) {
+		t.Fatalf("role_facts rewritten on resume:\n got %s\nwant %s", got.RoleFacts, preRole)
+	}
+	// Overwrite would re-run capture before validate (2 OSPF neighbor reads); preserve does validate only (1).
+	if n := count(sim.runs, validate.CmdOSPFNeighbor); n != 1 {
+		t.Fatalf("ospf neighbor captures %d, want 1 (validate only; overwrite would capture twice)", n)
+	}
+
+	loaded, err := state.Load(cfg.StateDir, "router-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Status != state.StatusComplete || loaded.Stage != upgrade.StageComplete {
+		t.Fatalf("status=%q stage=%q", loaded.Status, loaded.Stage)
+	}
+}
+
+func TestResumeRebootCorruptBaselineFailsClosed(t *testing.T) {
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	sim := world.sim("router-01")
+	sim.version = target
+	sim.rebooted = true
+
+	dir, err := validate.JobDir(cfg, "router-01", target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "baseline.json")
+	if err := os.WriteFile(path, []byte("{not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	job := &state.DeviceJob{
+		Device:  "router-01",
+		Release: target,
+		Group:   "core-a",
+		Stage:   upgrade.StageReboot,
+		Status:  state.StatusInProgress,
+		Facts:   factsJSON(t, sampleFacts(current)),
+	}
+	if err := state.Save(cfg.StateDir, job); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := world.opts()
+	opts.Resume = true
+	err = upgrade.Run(context.Background(), cfg, target, "core-a", "", opts)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "baseline unreadable") {
+		t.Fatalf("got %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "{not-json" {
+		t.Fatalf("corrupt baseline was rewritten: %q", raw)
+	}
+	if contains(sim.runs, validate.CmdOSPFNeighbor) {
+		t.Fatal("must not capture role facts over a corrupt baseline")
+	}
+}
+
+func TestResumePackagesAlreadyOnTargetStillValidates(t *testing.T) {
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	sim := world.sim("router-01")
+	sim.version = target
+	sim.rebooted = true
+	sim.commandOutputs = map[string]string{
+		validate.CmdOSPFNeighbor: " 0 instance=default router-id=10.0.0.1 address=10.0.0.1 interface=bridge state=\"Full\"\n",
+		validate.CmdIPRoute:      " 1 ADC  192.0.2.0/24       192.0.2.10      ether1                      0\n",
+	}
+
+	preRole := json.RawMessage(`{"_marker":"pre-upgrade-baseline","neighbors":[{"router_id":"10.0.0.1","address":"10.0.0.1","interface":"bridge","state":"Full"}],"prefixes":["192.0.2.0/24"]}`)
+	dir, err := validate.JobDir(cfg, "router-01", target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validate.WriteBaseline(dir, validate.FromFacts("router-01", sampleFacts(current), true, preRole)); err != nil {
+		t.Fatal(err)
+	}
+
+	job := &state.DeviceJob{
+		Device:  "router-01",
+		Release: target,
+		Group:   "core-a",
+		Stage:   upgrade.StagePackages,
+		Status:  state.StatusInProgress,
+		Facts:   factsJSON(t, sampleFacts(current)),
+	}
+	if err := state.Save(cfg.StateDir, job); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := world.opts()
+	opts.Resume = true
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", "", opts); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := validate.ReadBaseline(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(compactJSON(t, got.RoleFacts), compactJSON(t, preRole)) {
+		t.Fatalf("role_facts rewritten:\n got %s\nwant %s", got.RoleFacts, preRole)
+	}
+	if !contains(sim.runs, validate.CmdOSPFNeighbor) {
+		t.Fatal("expected VALIDATE_ROLE after resume while already on target")
+	}
+	loaded, err := state.Load(cfg.StateDir, "router-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Status != state.StatusComplete || loaded.Stage != upgrade.StageComplete {
+		t.Fatalf("status=%q stage=%q", loaded.Status, loaded.Stage)
+	}
+}
+
+func TestResumePackagesAlreadyOnTargetWithoutBaselineFailsClosed(t *testing.T) {
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	sim := world.sim("router-01")
+	sim.version = target
+	sim.rebooted = true
+
+	job := &state.DeviceJob{
+		Device:  "router-01",
+		Release: target,
+		Group:   "core-a",
+		Stage:   upgrade.StagePackages,
+		Status:  state.StatusInProgress,
+		Facts:   factsJSON(t, sampleFacts(current)),
+	}
+	if err := state.Save(cfg.StateDir, job); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := world.opts()
+	opts.Resume = true
+	err := upgrade.Run(context.Background(), cfg, target, "core-a", "", opts)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	// REBOOT is skipped after discover refresh; VALIDATE_ROLE fails closed on missing baseline.
+	if !strings.Contains(err.Error(), "baseline") {
+		t.Fatalf("want baseline failure, got %v", err)
+	}
+	dir, err := validate.JobDir(cfg, "router-01", target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "baseline.json")); !os.IsNotExist(err) {
+		t.Fatalf("baseline should not have been invented: %v", err)
+	}
+	if contains(sim.runs, validate.CmdOSPFNeighbor) {
+		t.Fatal("must not invent/capture role facts without a pre-upgrade baseline")
+	}
+	loaded, err := state.Load(cfg.StateDir, "router-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Status != state.StatusFailed {
+		t.Fatalf("status %q, want failed", loaded.Status)
+	}
+}
+
+func TestResumeRouterbootUpdateRewindsToValidate(t *testing.T) {
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	sim := world.sim("router-01")
+	sim.version = target
+	sim.rebooted = true
+	sim.currentFirmware = "6.49.21"
+	sim.upgradeFirmware = "6.49.21"
+	sim.commandOutputs = map[string]string{
+		validate.CmdOSPFNeighbor: " 0 instance=default router-id=10.0.0.1 address=10.0.0.1 interface=bridge state=\"Full\"\n",
+		validate.CmdIPRoute:      " 1 ADC  192.0.2.0/24       192.0.2.10      ether1                      0\n",
+	}
+
+	preRole := json.RawMessage(`{"_marker":"pre-upgrade-baseline","neighbors":[{"router_id":"10.0.0.1","address":"10.0.0.1","interface":"bridge","state":"Full"}],"prefixes":["192.0.2.0/24"]}`)
+	dir, err := validate.JobDir(cfg, "router-01", target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validate.WriteBaseline(dir, validate.FromFacts("router-01", sampleFacts(current), true, preRole)); err != nil {
+		t.Fatal(err)
+	}
+
+	job := &state.DeviceJob{
+		Device:  "router-01",
+		Release: target,
+		Group:   "core-a",
+		Stage:   upgrade.StageRouterbootUpdate,
+		Status:  state.StatusInProgress,
+		Facts:   factsJSON(t, sampleFacts(target)),
+	}
+	if err := state.Save(cfg.StateDir, job); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := world.opts()
+	opts.Resume = true
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", "", opts); err != nil {
+		t.Fatal(err)
+	}
+	if !contains(sim.runs, validate.CmdOSPFNeighbor) {
+		t.Fatal("expected package VALIDATE_ROLE after rewind from ROUTERBOOT_UPDATE")
+	}
+	got, err := validate.ReadBaseline(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(compactJSON(t, got.RoleFacts), compactJSON(t, preRole)) {
+		t.Fatalf("role_facts rewritten:\n got %s\nwant %s", got.RoleFacts, preRole)
+	}
+}
+
+func TestResumeRebootMissingBaselineWhileOnTargetFailsClosed(t *testing.T) {
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	sim := world.sim("router-01")
+	sim.version = target
+	sim.rebooted = true
+
+	job := &state.DeviceJob{
+		Device:  "router-01",
+		Release: target,
+		Group:   "core-a",
+		Stage:   upgrade.StageReboot,
+		Status:  state.StatusInProgress,
+		Facts:   factsJSON(t, sampleFacts(current)),
+	}
+	if err := state.Save(cfg.StateDir, job); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := world.opts()
+	opts.Resume = true
+	err := upgrade.Run(context.Background(), cfg, target, "core-a", "", opts)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "refusing to invent baseline") {
+		t.Fatalf("got %v", err)
+	}
+	dir, err := validate.JobDir(cfg, "router-01", target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "baseline.json")); !os.IsNotExist(err) {
+		t.Fatalf("baseline should not have been invented: %v", err)
+	}
+	if contains(sim.runs, validate.CmdOSPFNeighbor) {
+		t.Fatal("must not invent role facts while already on target")
+	}
+}
+
+func TestResumeRebootAllowsInventWhenLivePackagesNotSettled(t *testing.T) {
+	// Pins invent-refuse to AlreadyOnRelease(live), not VersionMatches(live).
+	// System version already equals target but a package is still off-target:
+	// inventing a pre-reboot baseline must still be allowed.
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	sim := world.sim("router-01")
+	sim.version = target
+	sim.rebooted = true
+	sim.packagePrint = packagePrintMixed(target, current, []string{"routeros", "wireless"})
+	sim.commandOutputs = map[string]string{
+		validate.CmdOSPFNeighbor: " 0 instance=default router-id=10.0.0.1 address=10.0.0.1 interface=bridge state=\"Full\"\n",
+		validate.CmdIPRoute:      " 1 ADC  192.0.2.0/24       192.0.2.10      ether1                      0\n",
+	}
+
+	job := &state.DeviceJob{
+		Device:  "router-01",
+		Release: target,
+		Group:   "core-a",
+		Stage:   upgrade.StageReboot,
+		Status:  state.StatusInProgress,
+		Facts:   factsJSON(t, sampleFacts(current)),
+	}
+	if err := state.Save(cfg.StateDir, job); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := world.opts()
+	opts.Resume = true
+	err := upgrade.Run(context.Background(), cfg, target, "core-a", "", opts)
+	// May fail later on package-version validate; invent itself must succeed.
+	dir, err2 := validate.JobDir(cfg, "router-01", target)
+	if err2 != nil {
+		t.Fatal(err2)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "baseline.json")); statErr != nil {
+		t.Fatalf("expected baseline invented when packages not settled: runErr=%v stat=%v", err, statErr)
+	}
+	if strings.Contains(fmt.Sprint(err), "refusing to invent baseline") {
+		t.Fatalf("VersionMatches-style refuse must not apply: %v", err)
 	}
 }
 
@@ -1360,6 +1714,8 @@ type deviceSim struct {
 	failValidateVersion bool
 	postReconnectDials  int
 	pendingVersion      string
+	commandOutputs      map[string]string
+	packagePrint        string
 }
 
 func (s *deviceSim) Run(_ context.Context, command string) (string, error) {
@@ -1372,6 +1728,9 @@ func (s *deviceSim) Run(_ context.Context, command string) (string, error) {
 		}
 		return resourcePrint(s.version), nil
 	case command == "/system package print":
+		if s.packagePrint != "" {
+			return s.packagePrint, nil
+		}
 		return packagePrint(s.version, s.packages), nil
 	case command == "/system routerboard print":
 		return s.routerboardPrint(), nil
@@ -1415,6 +1774,11 @@ func (s *deviceSim) Run(_ context.Context, command string) (string, error) {
 		command == validate.CmdWireless, command == validate.CmdWirelessReg,
 		command == validate.CmdBridge, command == validate.CmdBridgeVLAN,
 		command == validate.CmdInterface, command == validate.CmdIPAddress:
+		if s.commandOutputs != nil {
+			if out, ok := s.commandOutputs[command]; ok {
+				return out, nil
+			}
+		}
 		return "", nil
 	default:
 		return "", fmt.Errorf("unexpected command %q", command)
@@ -1730,6 +2094,18 @@ func packagePrint(version string, pkgs []string) string {
 	return b.String()
 }
 
+func packagePrintMixed(systemVer, laggingVer string, pkgs []string) string {
+	var b strings.Builder
+	for i, p := range pkgs {
+		ver := systemVer
+		if i > 0 {
+			ver = laggingVer
+		}
+		fmt.Fprintf(&b, " %d   %s                %s\n", i, p, ver)
+	}
+	return b.String()
+}
+
 func (s *deviceSim) routerboardPrint() string {
 	if s.nonRouterBoard {
 		return "routerboard: no\n"
@@ -1759,6 +2135,19 @@ func backupNameFromSave(command string) (string, bool) {
 		return "", false
 	}
 	return name, true
+}
+
+func compactJSON(t *testing.T, raw json.RawMessage) []byte {
+	t.Helper()
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		t.Fatal(err)
+	}
+	out, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 func contains(cmds []string, want string) bool {
