@@ -21,17 +21,20 @@ const (
 var ErrJobComplete = errors.New("state: job already complete")
 
 type DeviceJob struct {
-	Device     string          `json:"device"`
-	Release    string          `json:"release"`
-	Group      string          `json:"group"`
-	Stage      string          `json:"stage"`
-	Status     string          `json:"status"` // pending|in_progress|complete|failed
-	UpdatedAt  time.Time       `json:"updated_at"`
-	LastError  string          `json:"last_error,omitempty"`
-	Attempt    int             `json:"attempt"`
-	Facts      json.RawMessage `json:"facts,omitempty"`
-	ExportPath string          `json:"export_path,omitempty"`
-	BackupPath string          `json:"backup_path,omitempty"`
+	Device    string    `json:"device"`
+	Release   string    `json:"release"`
+	Group     string    `json:"group"`
+	Stage     string    `json:"stage"`
+	Status    string    `json:"status"` // pending|in_progress|complete|failed
+	UpdatedAt time.Time `json:"updated_at"`
+	LastError string    `json:"last_error,omitempty"`
+	// AbandonedRelease is the target release that failed validation and was
+	// left behind by a successful guarded downgrade. Empty means unset.
+	AbandonedRelease string          `json:"abandoned_release,omitempty"`
+	Attempt          int             `json:"attempt"`
+	Facts            json.RawMessage `json:"facts,omitempty"`
+	ExportPath       string          `json:"export_path,omitempty"`
+	BackupPath       string          `json:"backup_path,omitempty"`
 }
 
 func EnsureSecureDir(path string) error {
