@@ -226,7 +226,7 @@ rosup upgrade --release VERSION DEVICE --group GROUP
 
 `plan` prints the readiness report on stdout. If any host is blocked (disk, missing packages, unmet `depends_on`, or unsupported), it exits non-zero with a short counts-only error on stderr (host details stay on stdout).
 
-`release sync` prints `synced VERSION (N files)`. Use that VERSION. Omit `--group` to do every device. One device at a time. The first failure stops the run. A device already on the release skips packages and reboot. Incomplete jobs need `--resume` for the same release. Every upgrade ends with a rollup line (`upgrade: OK|FAILED  N complete / N failed / N pending  release VERSION`); if any selected device is not complete on the release, the command exits non-zero.
+`release sync` prints `synced VERSION (N files)`. Use that VERSION. Omit `--group` to do every device. One device at a time. The first failure stops the run, except a successful guarded restore: that host is left on the previous release, later selected devices that do not `depends_on` it continue, and the run still ends Incomplete/pending for the restored host on this VERSION. A device already on the release skips packages and reboot. Incomplete jobs need `--resume` for the same release. A host restored after a failed upgrade to VERSION is skipped on later group upgrades until you run `rosup upgrade DEVICE --release VERSION`. Every upgrade ends with a rollup line (`upgrade: OK|FAILED  N complete / N failed / N pending  release VERSION`); if any selected device is not complete on the release, the command exits non-zero.
 
 ```
 >  edge-1  checking SSH and version
@@ -256,7 +256,7 @@ rosup backup run DEVICE
 rosup backup restore DEVICE --file PATH
 ```
 
-A device name selects one host. With `--group`, both must match (the device must be in that group). `status --group` still lists orphan jobs for that group even when inventory has no members there; an unknown group with no orphans prints an empty report.
+A device name selects one host. With `--group`, both must match (the device must be in that group). `status --group` still lists orphan jobs for that group even when inventory has no members there; an unknown group with no orphans prints an empty report. After a guarded restore, retry that host with `rosup upgrade DEVICE --release VERSION`; `--resume` is for incomplete `in_progress` / `failed` jobs on the same release, not for restored hosts.
 
 `rosup pull` fetches `ops.remote` (with prune), requires the current branch to track `origin`, then cleans untracked paths and hard-resets to that tip. Uncommitted edits, untracked files, unpushed local commits, and other local-only worktree files are discarded. This is not `git pull`: remote always wins. Soft refreshes inside `backup run` / upgrade audit pushes still use a normal fast-forward pull and do not discard local commits. If pull fails after the clean step, re-run it; do not hand-edit the checkout to recover.
 

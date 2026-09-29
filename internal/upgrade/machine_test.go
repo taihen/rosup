@@ -1552,6 +1552,9 @@ func TestGuardedDowngradeOnValidationFailureWhenSSHUp(t *testing.T) {
 	if job.Stage != upgrade.StageComplete {
 		t.Fatalf("stage %q", job.Stage)
 	}
+	if job.AbandonedRelease != target {
+		t.Fatalf("abandoned_release %q, want %s", job.AbandonedRelease, target)
+	}
 	if !strings.Contains(job.LastError, "restored") && !strings.Contains(job.LastError, "validation failed") {
 		t.Fatalf("last_error %q", job.LastError)
 	}
@@ -1573,6 +1576,159 @@ func TestGuardedDowngradeOnValidationFailureWhenSSHUp(t *testing.T) {
 	}
 	if sim.version != current {
 		t.Fatalf("version after guarded downgrade %q, want %q", sim.version, current)
+	}
+}
+
+func TestContinueAfterGuardedDowngrade(t *testing.T) {
+	cfg, world := setup(t,
+		device("router-01", "core-a", 10, nil),
+		device("router-02", "core-a", 20, nil),
+	)
+	writeRelease(t, cfg, current, []release.File{
+		npkVer("routeros", "arm", current),
+		npkVer("wireless", "arm", current),
+	})
+	sim1 := world.sim("router-01")
+	sim1.failValidateVersion = true
+	var buf bytes.Buffer
+	opts := world.opts()
+	opts.Out = &buf
+
+	err := upgrade.Run(context.Background(), cfg, target, "core-a", "", opts)
+	if err == nil {
+		t.Fatal("expected incomplete error")
+	}
+	if !strings.Contains(err.Error(), "incomplete") {
+		t.Fatalf("got %v", err)
+	}
+
+	job1, err := state.Load(cfg.StateDir, "router-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job1.Status != state.StatusComplete || job1.Release != current || job1.AbandonedRelease != target {
+		t.Fatalf("router-01 job status=%s release=%s abandoned=%s", job1.Status, job1.Release, job1.AbandonedRelease)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "restored "+current+" off "+target) {
+		t.Fatalf("missing restore progress line: %q", out)
+	}
+	if !strings.Contains(out, "retry by device name") {
+		t.Fatalf("missing retry hint in progress: %q", out)
+	}
+
+	job2, err := state.Load(cfg.StateDir, "router-02")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job2.Status != state.StatusComplete || job2.Release != target {
+		t.Fatalf("router-02 status=%s release=%s", job2.Status, job2.Release)
+	}
+}
+
+func TestSkipRestoredOnLaterGroupRun(t *testing.T) {
+	cfg, world := setup(t,
+		device("router-01", "core-a", 10, nil),
+		device("router-02", "core-a", 20, nil),
+	)
+	writeRelease(t, cfg, current, []release.File{
+		npkVer("routeros", "arm", current),
+		npkVer("wireless", "arm", current),
+	})
+	sim1 := world.sim("router-01")
+	sim1.failValidateVersion = true
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", "", world.opts()); err == nil {
+		t.Fatal("expected incomplete after restore")
+	}
+	uploadsAfterRestore := len(sim1.uploads)
+	attempts := 0
+	if job, err := state.Load(cfg.StateDir, "router-01"); err == nil {
+		attempts = job.Attempt
+	}
+
+	var buf bytes.Buffer
+	opts := world.opts()
+	opts.Out = &buf
+	err := upgrade.Run(context.Background(), cfg, target, "core-a", "", opts)
+	if err == nil {
+		t.Fatal("expected incomplete while restored host pending")
+	}
+	if len(sim1.uploads) != uploadsAfterRestore {
+		t.Fatalf("router-01 re-attempted uploads: before %d after %d", uploadsAfterRestore, len(sim1.uploads))
+	}
+	job1, err := state.Load(cfg.StateDir, "router-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job1.Attempt != attempts {
+		t.Fatalf("attempt bumped %d -> %d", attempts, job1.Attempt)
+	}
+	if job1.AbandonedRelease != target {
+		t.Fatalf("abandoned_release %q", job1.AbandonedRelease)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "restored off "+target+"; retry by device name") {
+		t.Fatalf("missing skip line: %q", out)
+	}
+	skipIdx := strings.Index(out, "restored off "+target)
+	if skipIdx < 0 {
+		t.Fatalf("missing restored-off skip: %q", out)
+	}
+	line := out[skipIdx:]
+	if i := strings.Index(line, "\n"); i >= 0 {
+		line = line[:i]
+	}
+	if strings.Contains(line, "--resume") {
+		t.Fatalf("skip line should not suggest --resume: %q", line)
+	}
+	if strings.Contains(line, "...") {
+		t.Fatalf("skip line truncated: %q", line)
+	}
+
+	job2, err := state.Load(cfg.StateDir, "router-02")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job2.Status != state.StatusComplete || job2.Release != target {
+		t.Fatalf("router-02 status=%s release=%s", job2.Status, job2.Release)
+	}
+}
+
+func TestRetryRestoredByName(t *testing.T) {
+	cfg, world := setup(t, device("router-01", "core-a", 10, nil))
+	writeRelease(t, cfg, current, []release.File{
+		npkVer("routeros", "arm", current),
+		npkVer("wireless", "arm", current),
+	})
+	sim := world.sim("router-01")
+	sim.failValidateVersion = true
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", "", world.opts()); err == nil {
+		t.Fatal("expected incomplete after restore")
+	}
+	job, err := state.Load(cfg.StateDir, "router-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.AbandonedRelease != target {
+		t.Fatalf("abandoned_release %q", job.AbandonedRelease)
+	}
+	// Device is back on current; allow a clean retry to target.
+	sim.version = current
+	sim.rebooted = false
+	sim.failValidateVersion = false
+
+	if err := upgrade.Run(context.Background(), cfg, target, "core-a", "router-01", world.opts()); err != nil {
+		t.Fatal(err)
+	}
+	job, err = state.Load(cfg.StateDir, "router-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != state.StatusComplete || job.Release != target {
+		t.Fatalf("status=%s release=%s", job.Status, job.Release)
+	}
+	if job.AbandonedRelease != "" {
+		t.Fatalf("abandoned_release still set: %q", job.AbandonedRelease)
 	}
 }
 

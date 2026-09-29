@@ -109,7 +109,7 @@ func Run(ctx context.Context, cfg *config.Config, version, group, name string, o
 
 	var runErr error
 	for _, d := range devices {
-		if err := runDevice(ctx, cfg, version, d, man, opts, printer); err != nil {
+		if err := runDevice(ctx, cfg, version, name, d, man, opts, printer); err != nil {
 			runErr = err
 			break
 		}
@@ -150,7 +150,7 @@ func applyDefaults(opts Options) Options {
 	return opts
 }
 
-func runDevice(ctx context.Context, cfg *config.Config, version string, d inventory.Device, man release.Manifest, opts Options, printer *progress.Printer) error {
+func runDevice(ctx context.Context, cfg *config.Config, version, name string, d inventory.Device, man release.Manifest, opts Options, printer *progress.Printer) error {
 	job, err := loadOrNew(cfg.StateDir, d)
 	if err != nil {
 		return err
@@ -160,7 +160,12 @@ func runDevice(ctx context.Context, cfg *config.Config, version string, d invent
 		return nil
 	}
 	if job.Status == state.StatusComplete {
-		// Prior release finished; start a fresh job for this release.
+		// After inventory.Select, name == "" means group/fleet; non-empty means this device was named.
+		if job.AbandonedRelease == version && name == "" {
+			printer.Skip(d.Name, "restored off "+version+"; retry by device name")
+			return nil
+		}
+		// Prior release finished (or explicit retry of an abandoned host); start a fresh job.
 		job = &state.DeviceJob{
 			Device: d.Name,
 			Group:  d.Group,
@@ -255,10 +260,10 @@ func runDevice(ctx context.Context, cfg *config.Config, version string, d invent
 				return err
 			}
 			if isValidationStage(st) {
-				err = r.maybeDowngrade(err)
-				if r.job.Status == state.StatusComplete {
-					return err
+				if err := r.maybeDowngrade(err); err != nil {
+					return markFailed(cfg.StateDir, job, err)
 				}
+				return nil
 			}
 			return markFailed(cfg.StateDir, job, err)
 		}
@@ -625,15 +630,26 @@ func (r *deviceRun) maybeDowngrade(cause error) error {
 	}
 	// Device is healthy on the previous release; record that so --resume does
 	// not keep validating the abandoned target against a restored box.
+	prevRelease := r.job.Release
+	prevStatus := r.job.Status
+	prevStage := r.job.Stage
+	prevLastError := r.job.LastError
+	r.job.AbandonedRelease = r.version
 	r.job.Release = prev
 	r.job.Status = state.StatusComplete
 	r.job.Stage = StageComplete
 	r.job.LastError = redact.String(fmt.Sprintf("validation failed after upgrade; restored %s: %v", prev, cause))
 	r.job.UpdatedAt = time.Now().UTC()
 	if err := state.Save(r.cfg.StateDir, r.job); err != nil {
+		r.job.AbandonedRelease = ""
+		r.job.Release = prevRelease
+		r.job.Status = prevStatus
+		r.job.Stage = prevStage
+		r.job.LastError = prevLastError
 		return fmt.Errorf("%w (downgrade save: %v)", cause, err)
 	}
-	return fmt.Errorf("%w (restored %s)", cause, prev)
+	r.progress.Skip(r.d.Name, "restored "+prev+" off "+r.version+"; retry by device name")
+	return nil
 }
 
 func (r *deviceRun) downgradeToPrevious() error {
