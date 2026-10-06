@@ -4,22 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	git "github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing/object"
-
 	"github.com/taihen/rosup/internal/config"
 	"github.com/taihen/rosup/internal/opsgit"
-	"github.com/taihen/rosup/internal/redact"
 )
 
 const (
-	authorName    = "rosup"
-	authorEmail   = "rosup@localhost"
 	backupTimeFmt = "20060102T150405Z"
 )
 
@@ -45,32 +38,6 @@ func Push(ctx context.Context, cfg *config.Config, items []Item) error {
 		}
 	}
 
-	auth, err := opsgit.Auth(cfg)
-	if err != nil {
-		return fmt.Errorf("backupgit: %w", err)
-	}
-
-	repo, err := opsgit.Open(cfg)
-	if err != nil {
-		return fmt.Errorf("backupgit: %w", err)
-	}
-	if err := opsgit.CheckRemote(repo, cfg.Ops.Remote); err != nil {
-		return fmt.Errorf("backupgit: %w", err)
-	}
-	wt, err := repo.Worktree()
-	if err != nil {
-		return fmt.Errorf("backupgit: worktree: %w", err)
-	}
-
-	if err := wt.PullContext(ctx, &git.PullOptions{Auth: auth, RemoteName: "origin"}); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
-		return fmt.Errorf("backupgit: pull: %w", err)
-	}
-
-	// Drop any pre-staged paths so Commit cannot piggyback inventory/ or other files.
-	if err := wt.Reset(&git.ResetOptions{Mode: git.MixedReset}); err != nil {
-		return fmt.Errorf("backupgit: reset index: %w", err)
-	}
-
 	backupsDir := cfg.Ops.BackupsDir
 	if backupsDir == "" {
 		backupsDir = "backups"
@@ -78,45 +45,15 @@ func Push(ctx context.Context, cfg *config.Config, items []Item) error {
 	if err := validateBackupsDir(backupsDir); err != nil {
 		return err
 	}
+	commitItems := make([]opsgit.Item, 0, len(items))
 	for _, item := range items {
-		if err := stageItem(wt, cfg.Ops.Path, backupsDir, item); err != nil {
-			return err
-		}
+		commitItems = append(commitItems, opsgit.Item{
+			Rel:  filepath.ToSlash(relPath(backupsDir, item.Device, item.Time)),
+			Body: item.Export,
+		})
 	}
-
-	sig := &object.Signature{
-		Name:  authorName,
-		Email: authorEmail,
-		When:  time.Now().UTC(),
-	}
-	if _, err := wt.Commit(commitMessage(len(items)), &git.CommitOptions{
-		Author:    sig,
-		Committer: sig,
-	}); err != nil && !errors.Is(err, git.ErrEmptyCommit) {
-		return fmt.Errorf("backupgit: commit: %w", err)
-	}
-
-	if err := repo.PushContext(ctx, &git.PushOptions{Auth: auth, RemoteName: "origin"}); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
-		return fmt.Errorf("backupgit: push: %w", err)
-	}
-	return nil
-}
-
-func stageItem(wt *git.Worktree, opsPath, backupsDir string, item Item) error {
-	rel := relPath(backupsDir, item.Device, item.Time)
-	path, err := containedPath(opsPath, rel)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("backupgit: mkdir %s: %w", filepath.Dir(path), err)
-	}
-	if err := os.WriteFile(path, []byte(redact.String(item.Export)), 0o644); err != nil {
-		return fmt.Errorf("backupgit: write %s: %w", path, err)
-	}
-	addRel := filepath.ToSlash(rel)
-	if _, err := wt.Add(addRel); err != nil {
-		return fmt.Errorf("backupgit: add %s: %w", addRel, err)
+	if err := opsgit.Commit(ctx, cfg, commitMessage(len(items)), commitItems); err != nil {
+		return fmt.Errorf("backupgit: %w", err)
 	}
 	return nil
 }
@@ -139,19 +76,6 @@ func validateBackupsDir(backupsDir string) error {
 		return fmt.Errorf("backupgit: backups_dir escapes ops path: %q", backupsDir)
 	}
 	return nil
-}
-
-func containedPath(opsPath, rel string) (string, error) {
-	opsClean := filepath.Clean(opsPath)
-	path := filepath.Clean(filepath.Join(opsClean, rel))
-	relToOps, err := filepath.Rel(opsClean, path)
-	if err != nil {
-		return "", fmt.Errorf("backupgit: resolve path: %w", err)
-	}
-	if relToOps == ".." || strings.HasPrefix(relToOps, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("backupgit: path escapes ops: %s", rel)
-	}
-	return path, nil
 }
 
 func commitMessage(n int) string {
