@@ -5,22 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
-	"time"
-
-	git "github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing/object"
 
 	"github.com/taihen/rosup/internal/config"
 	"github.com/taihen/rosup/internal/opsgit"
-	"github.com/taihen/rosup/internal/redact"
 	"github.com/taihen/rosup/internal/state"
-)
-
-const (
-	authorName  = "rosup"
-	authorEmail = "rosup@localhost"
 )
 
 type Artifacts struct {
@@ -43,76 +32,22 @@ func Push(ctx context.Context, cfg *config.Config, job *state.DeviceJob, jobID s
 		return err
 	}
 
-	auth, err := opsgit.Auth(cfg)
-	if err != nil {
-		return fmt.Errorf("auditgit: %w", err)
-	}
-
-	repo, err := opsgit.Open(cfg)
-	if err != nil {
-		return fmt.Errorf("auditgit: %w", err)
-	}
-	if err := opsgit.CheckRemote(repo, cfg.Ops.Remote); err != nil {
-		return fmt.Errorf("auditgit: %w", err)
-	}
-	wt, err := repo.Worktree()
-	if err != nil {
-		return fmt.Errorf("auditgit: worktree: %w", err)
-	}
-
-	if err := wt.PullContext(ctx, &git.PullOptions{Auth: auth, RemoteName: "origin"}); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
-		return fmt.Errorf("auditgit: pull: %w", err)
-	}
-
-	// Drop any pre-staged paths so Commit cannot piggyback inventory/ or other files.
-	if err := wt.Reset(&git.ResetOptions{Mode: git.MixedReset}); err != nil {
-		return fmt.Errorf("auditgit: reset index: %w", err)
-	}
-
 	auditDir := cfg.Ops.AuditDir
 	if auditDir == "" {
 		auditDir = "audit"
-	}
-	relDir := filepath.Join(auditDir, job.Device, jobID)
-	dir := filepath.Join(cfg.Ops.Path, relDir)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("auditgit: mkdir %s: %w", dir, err)
 	}
 
 	resultJSON, err := json.MarshalIndent(artifacts.Result, "", "  ")
 	if err != nil {
 		return fmt.Errorf("auditgit: result.json: %w", err)
 	}
-	files := map[string]string{
-		"export.rsc":  redact.String(artifacts.Export),
-		"result.json": redact.String(string(resultJSON)) + "\n",
-		"log.txt":     redact.String(artifacts.Log),
+	items := []opsgit.Item{
+		{Rel: filepath.ToSlash(filepath.Join(auditDir, job.Device, jobID, "export.rsc")), Body: artifacts.Export},
+		{Rel: filepath.ToSlash(filepath.Join(auditDir, job.Device, jobID, "result.json")), Body: string(resultJSON) + "\n"},
+		{Rel: filepath.ToSlash(filepath.Join(auditDir, job.Device, jobID, "log.txt")), Body: artifacts.Log},
 	}
-	for name, body := range files {
-		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-			return fmt.Errorf("auditgit: write %s: %w", path, err)
-		}
-		rel := filepath.ToSlash(filepath.Join(relDir, name))
-		if _, err := wt.Add(rel); err != nil {
-			return fmt.Errorf("auditgit: add %s: %w", rel, err)
-		}
-	}
-
-	sig := &object.Signature{
-		Name:  authorName,
-		Email: authorEmail,
-		When:  time.Now().UTC(),
-	}
-	if _, err := wt.Commit("audit: "+job.Device+" "+jobID, &git.CommitOptions{
-		Author:    sig,
-		Committer: sig,
-	}); err != nil && !errors.Is(err, git.ErrEmptyCommit) {
-		return fmt.Errorf("auditgit: commit: %w", err)
-	}
-
-	if err := repo.PushContext(ctx, &git.PushOptions{Auth: auth, RemoteName: "origin"}); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
-		return fmt.Errorf("auditgit: push: %w", err)
+	if err := opsgit.Commit(ctx, cfg, "audit: "+job.Device+" "+jobID, items); err != nil {
+		return fmt.Errorf("auditgit: %w", err)
 	}
 	return nil
 }

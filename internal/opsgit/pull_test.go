@@ -6,21 +6,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	git "github.com/go-git/go-git/v5"
 	gitcfg "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/object"
-	"github.com/taihen/rosup/internal/config"
 	"github.com/taihen/rosup/internal/opsgit"
 )
-
-type gitEnv struct {
-	bare string
-	ops  string
-	cfg  *config.Config
-}
 
 func TestPullAlreadyUpToDate(t *testing.T) {
 	env := setupOpsRepo(t)
@@ -111,7 +102,7 @@ func TestPullFetchesRemoteCommits(t *testing.T) {
 	env := setupOpsRepo(t)
 	other := cloneWorktree(t, env.bare)
 	writeCommit(t, other, "inventory/devices.yaml", "devices: [from-remote]\n", "remote update")
-	push(t, other)
+	pushRepo(t, other)
 
 	res, err := opsgit.Pull(context.Background(), env.cfg)
 	if err != nil {
@@ -314,124 +305,5 @@ func TestPullIgnoredFileNotAlreadyUpToDate(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(env.ops, "secret.log")); !os.IsNotExist(err) {
 		t.Fatalf("ignored file should be discarded by hard-reset, stat=%v", err)
-	}
-}
-
-func setupOpsRepo(t *testing.T) gitEnv {
-	t.Helper()
-	root := t.TempDir()
-	seed := filepath.Join(root, "seed")
-	bare := filepath.Join(root, "remote.git")
-	ops := filepath.Join(root, "ops")
-
-	initSeed(t, seed)
-	if _, err := git.PlainClone(bare, true, &git.CloneOptions{URL: seed}); err != nil {
-		t.Fatalf("bare clone: %v", err)
-	}
-	if _, err := git.PlainClone(ops, false, &git.CloneOptions{URL: bare}); err != nil {
-		t.Fatalf("ops clone: %v", err)
-	}
-
-	return gitEnv{
-		bare: bare,
-		ops:  ops,
-		cfg: &config.Config{
-			Ops: config.OpsConfig{
-				Path:   ops,
-				Remote: bare,
-			},
-		},
-	}
-}
-
-func initSeed(t *testing.T, dir string) {
-	t.Helper()
-	repo, err := git.PlainInit(dir, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(dir, "inventory"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "inventory", "devices.yaml"), []byte("devices: []\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	wt, err := repo.Worktree()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := wt.Add("inventory/devices.yaml"); err != nil {
-		t.Fatal(err)
-	}
-	sig := testSig()
-	if _, err := wt.Commit("seed", &git.CommitOptions{Author: sig, Committer: sig}); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func cloneWorktree(t *testing.T, bare string) string {
-	t.Helper()
-	dir := filepath.Join(t.TempDir(), "clone")
-	if _, err := git.PlainClone(dir, false, &git.CloneOptions{URL: bare}); err != nil {
-		t.Fatalf("clone: %v", err)
-	}
-	return dir
-}
-
-func writeCommit(t *testing.T, worktree, relPath, contents, msg string) {
-	t.Helper()
-	path := filepath.Join(worktree, relPath)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	repo, err := git.PlainOpen(worktree)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wt, err := repo.Worktree()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := wt.Add(filepath.ToSlash(relPath)); err != nil {
-		t.Fatal(err)
-	}
-	sig := testSig()
-	if _, err := wt.Commit(msg, &git.CommitOptions{Author: sig, Committer: sig}); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func push(t *testing.T, worktree string) {
-	t.Helper()
-	repo, err := git.PlainOpen(worktree)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := repo.Push(&git.PushOptions{}); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func headHash(t *testing.T, path string) plumbing.Hash {
-	t.Helper()
-	repo, err := git.PlainOpen(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ref, err := repo.Head()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return ref.Hash()
-}
-
-func testSig() *object.Signature {
-	return &object.Signature{
-		Name:  "test",
-		Email: "test@example.com",
-		When:  time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC),
 	}
 }
